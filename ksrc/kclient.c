@@ -557,3 +557,27 @@ int main(int argc, char **argv) {
 	return ret;
 }
 
+
+static struct task_struct *thread = NULL;
+
+#define IPADDR_LEN 16
+static char server[IPADDR_LEN]={0}; // server ip address
+module_param_string(str, server, IPADDR_LEN, S_IRUGO);
+
+static int port = 19923; // server port number
+module_param(port, int, S_IRUGO);
+
+int __init kclient_init(void) {
+	int ret;
+    return 0;
+}
+
+void __exit kclient_exit(void) {
+	int ret;
+}
+
+module_init(kclient_init);
+module_exit(kclient_exit);
+MODULE_AUTHOR("Leon Zhao <xleonzhao@gmail.com>");
+MODULE_DESCRIPTION("RDMA client kernel module");
+MODULE_LICENSE("GPLv2");
