@@ -11,8 +11,6 @@
 #define KCOMMON_H
 
 #include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
 #include <linux/inet.h>
 
 /* Error Macro*/
@@ -33,6 +31,7 @@
 
 #endif /* KRDMA_DEBUG */
 
+#ifdef TEMP_DISABLED
 /* Capacity of the completion queue (CQ) */
 #define CQ_CAPACITY (16)
 /* MAX SGE capacity */
@@ -119,5 +118,6 @@ int process_work_completion_events(struct ibv_comp_channel *comp_channel,
 
 /* prints some details from the cm id */
 void show_rdma_cmid(struct rdma_cm_id *id);
+#endif
 
 #endif /* KCOMMON_H */
