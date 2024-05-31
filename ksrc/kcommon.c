@@ -7,6 +7,8 @@
 
 #include "kcommon.h"
 
+#ifdef TEMP_DISABLED
+
 void show_rdma_cmid(struct rdma_cm_id *id)
 {
 	if(!id){
@@ -194,17 +196,19 @@ int process_work_completion_events (struct ibv_comp_channel *comp_channel,
 
 
 /* Code acknowledgment: rping.c from librdmacm/examples */
-int get_addr(char *dst, struct sockaddr *addr)
+int get_addr(char *dst, struct sockaddr_in *addr)
 {
-	struct addrinfo *res;
-	int ret = -1;
-	ret = getaddrinfo(dst, NULL, NULL, &res);
+	u8 res[4];
+
+	int ret = 0;
+	ret = in4_pton(dst, strlen(dst), res, -1, NULL);
 	if (ret) {
-		rdma_error("getaddrinfo failed - invalid hostname or IP address\n");
+		rdma_error("get_addr() failed - invalid hostname or IP address\n");
 		return ret;
 	}
-	memcpy(addr, res->ai_addr, sizeof(struct sockaddr_in));
-	freeaddrinfo(res);
+	addr->sin_addr.s_addr = res;
 	return ret;
 }
+
+#endif // TEMP_DISABLED
 

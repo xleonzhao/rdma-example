@@ -14,11 +14,30 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
+#include <linux/inet.h>
 
 // #include "krdma.h"
 #include "kcommon.h"
 
+static struct task_struct *thread = NULL;
+
+#define IPADDR_LEN 16
+static char server[IPADDR_LEN]={0}; // server ip address
+module_param_string(server, server, IPADDR_LEN, S_IRUGO);
+
+static int port = 19923; // server port number
+module_param(port, int, S_IRUGO);
+
+static struct sockaddr_in server_sockaddr = {0};
+
 static int client_main(void * data) {
+	int ret;
+
+	// memset(&server_sockaddr, 0, sizeof server_sockaddr);
+	server_sockaddr.sin_family = AF_INET;
+	server_sockaddr.sin_addr.s_addr =in_aton(server);
+	server_sockaddr.sin_port = htons(DEFAULT_RDMA_PORT);
+
 	debug("hello");
 	while (!kthread_should_stop()) {
 		msleep(1000);
@@ -83,15 +102,6 @@ static int client_main(void * data) {
 }
 
 /////////////////////////////////////////////////////////////
-
-static struct task_struct *thread = NULL;
-
-#define IPADDR_LEN 16
-static char server[IPADDR_LEN]={0}; // server ip address
-module_param_string(str, server, IPADDR_LEN, S_IRUGO);
-
-static int port = 19923; // server port number
-module_param(port, int, S_IRUGO);
 
 int __init kclient_init(void) {
 	int ret;

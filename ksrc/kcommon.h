@@ -57,8 +57,6 @@ struct __attribute((packed)) rdma_buffer_attr {
 	  uint32_t remote_stag;
   }stag;
 };
-/* resolves a given destination name to sin_addr */
-int get_addr(char *dst, struct sockaddr *addr);
 
 /* prints RDMA buffer info structure */
 void show_rdma_buffer_attr(struct rdma_buffer_attr *attr);
@@ -118,6 +116,10 @@ int process_work_completion_events(struct ibv_comp_channel *comp_channel,
 
 /* prints some details from the cm id */
 void show_rdma_cmid(struct rdma_cm_id *id);
+
+/* resolves a given destination name to sin_addr */
+int get_addr(char *dst, struct sockaddr_in *addr);
+
 #endif
 
 #endif /* KCOMMON_H */
