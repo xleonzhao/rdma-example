@@ -42,8 +42,6 @@
 /* Default port where the RDMA server is listening */
 #define DEFAULT_RDMA_PORT (20886)
 
-#ifdef TEMP_DISABLED
-
 /* 
  * We use attribute so that compiler does not step in and try to pad the structure.
  * We use this structure to exchange information between the server and the client. 
@@ -60,6 +58,10 @@ struct __attribute((packed)) rdma_buffer_attr {
 	  uint32_t remote_stag;
   }stag;
 };
+
+#ifdef TEMP_DISABLED
+
+int client_disconnect_and_clean();
 
 /* prints RDMA buffer info structure */
 void show_rdma_buffer_attr(struct rdma_buffer_attr *attr);

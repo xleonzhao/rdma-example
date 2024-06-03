@@ -41,9 +41,9 @@ static int check_src_dst(void)
 }
 
 /* This function prepares client side connection resources for an RDMA connection */
-static int client_prepare_connection(struct krdma_cb *cb, struct sockaddr_in *s_addr)
+static int client_prepare_connection(struct krdma_cb *cb)
 {
-	struct rdma_cm_event *cm_event = NULL;
+	// struct rdma_cm_event *cm_event = NULL;
 	int ret = -1;
 
 	/*  Open a channel used to report asynchronous communication event */
@@ -195,10 +195,6 @@ static int client_prepare_connection(struct krdma_cb *cb, struct sockaddr_in *s_
 	return 0;
 #endif // _OLD_CODE
 
-	ret = krdma_init_cb(cb);
-	if (ret < 0)
-		return ret;
-
 	return 0;
 
 	// ret = __krdma_connect(cb);
@@ -208,45 +204,121 @@ static int client_prepare_connection(struct krdma_cb *cb, struct sockaddr_in *s_
 
 }
 
+static struct ib_mr *rdma_buffer_register(struct krdma_cb *cb, 
+		void *addr, uint32_t length, 
+		enum ib_access_flags permission)
+{
+	struct ib_mr *mr = NULL;
+    u64 dma_addr;
+
+	if (!cb->pd) {
+		rdma_error("Protection domain is NULL, ignoring \n");
+		return NULL;
+	}
+
+    // create memory region
+	mr = ib_alloc_mr(cb->pd, IB_MR_TYPE_MEM_REG, length);
+	if (IS_ERR(cb->reg_mr)) {
+		ret = PTR_ERR(cb->reg_mr);
+		DEBUG_LOG(PFX "recv_buf reg_mr failed %d\n", ret);
+		goto bail;
+	}
+
+    mr = cb->pd->device->ops.get_dma_mr(cb->pd, permission);
+	if (!mr) {
+		rdma_error("Failed to create mr for server metadata\n");
+		return NULL;
+	}
+
+    // get dma_addr
+    dma_addr = ib_dma_map_single(cb->pd->device, addr, 
+            RDMA_BUFFER_SIZE, DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, dma_addr) == 0) {
+		rdma_error("Failed to map buffer addr to dma addr\n");
+		return NULL;
+	}
+
+	debug("Registered: %p , len: %u , stag: 0x%x \n", 
+			mr->addr, 
+			(unsigned int) mr->length, 
+			mr->lkey);
+
+	return mr;
+}
+
+/*
+static int setup_mr(rdma_ctx_t ctx)
+{
+    // create receive buffer
+    ctx->rdma_recv_buffer = kmalloc(RDMA_BUFFER_SIZE, GFP_KERNEL);
+    CHECK_MSG_RET(ctx->rdma_recv_buffer != 0, "Error kmalloc", -1);
+
+    // create memory region
+    ctx->mr = rdma_dev.dev->ops.get_dma_mr(ctx->pd, IB_ACCESS_REMOTE_READ | 
+                                     IB_ACCESS_REMOTE_WRITE | 
+                                     IB_ACCESS_LOCAL_WRITE);
+    CHECK_MSG_RET(ctx->mr != 0, "Error creating MR", -1);
+
+    ctx->rkey = ctx->mr->rkey;
+
+    // get dma_addr
+    ctx->dma_addr = ib_dma_map_single(rdma_dev.dev, ctx->rdma_recv_buffer, 
+            RDMA_BUFFER_SIZE, DMA_BIDIRECTIONAL);
+    CHECK_MSG_RET(ib_dma_mapping_error(rdma_dev.dev, ctx->dma_addr) == 0,
+            "Error ib_dma_map_single", -1);
+
+    return 0;
+}
+*/
+
+static struct ib_mr *server_metadata_mr = NULL;
+static struct rdma_buffer_attr server_metadata_attr;
+
 /* Pre-posts a receive buffer before calling rdma_connect () */
-// static int client_pre_post_recv_buffer()
-// {
-// 	int ret = -1;
-// 	server_metadata_mr = rdma_buffer_register(pd,
-// 			&server_metadata_attr,
-// 			sizeof(server_metadata_attr),
-// 			(IBV_ACCESS_LOCAL_WRITE));
-// 	if(!server_metadata_mr){
-// 		rdma_error("Failed to setup the server metadata mr , -ENOMEM\n");
-// 		return -ENOMEM;
-// 	}
-// 	server_recv_sge.addr = (uint64_t) server_metadata_mr->addr;
-// 	server_recv_sge.length = (uint32_t) server_metadata_mr->length;
-// 	server_recv_sge.lkey = (uint32_t) server_metadata_mr->lkey;
-// 	/* now we link it to the request */
-// 	bzero(&server_recv_wr, sizeof(server_recv_wr));
-// 	server_recv_wr.sg_list = &server_recv_sge;
-// 	server_recv_wr.num_sge = 1;
-// 	ret = ibv_post_recv(client_qp /* which QP */,
-// 		      &server_recv_wr /* receive work request*/,
-// 		      &bad_server_recv_wr /* error WRs */);
-// 	if (ret) {
-// 		rdma_error("Failed to pre-post the receive buffer, errno: %d \n", ret);
-// 		return ret;
-// 	}
-// 	debug("Receive buffer pre-posting is successful \n");
-// 	return 0;
-// }
+static int client_pre_post_recv_buffer(struct krdma_cb *cb)
+{
+	int ret = -1;
+	struct ib_sge server_recv_sge[1];
+	struct ib_rdma_wr server_recv_wr;
+	const struct ib_send_wr *bad_wr = NULL;
+
+	server_metadata_mr = rdma_buffer_register(cb,
+			&server_metadata_attr,
+			sizeof(server_metadata_attr),
+			(IB_ACCESS_LOCAL_WRITE));
+	if(!server_metadata_mr){
+		rdma_error("Failed to setup the server metadata mr , -ENOMEM\n");
+		return -ENOMEM;
+	}
+
+	memset(server_recv_sge, 0, sizeof(struct ib_sge));
+	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
+
+	server_recv_sge[0].addr = (uint64_t) server_metadata_mr->addr;
+	server_recv_sge[0].length = (uint32_t) server_metadata_mr->length;
+	server_recv_sge[0].lkey = (uint32_t) server_metadata_mr->lkey;
+
+	/* now we link it to the request */
+	bzero(&server_recv_wr, sizeof(server_recv_wr));
+	server_recv_wr.sg_list = server_recv_sge;
+	server_recv_wr.num_sge = 1;
+	ret = ib_post_recv(cb->qp /* which QP */,
+		      &server_recv_wr /* receive work request*/,
+		      &bad_wr /* error WRs */);
+	if (ret) {
+		rdma_error("Failed to pre-post the receive buffer, errno: %d \n", ret);
+		return ret;
+	}
+	debug("Receive buffer pre-posting is successful \n");
+	return 0;
+}
 
 static int client_main(void * data) {
 	int ret = 0;
 	src = dst = NULL; 
 	struct krdma_cb *cb;
 
-	// memset(&server_sockaddr, 0, sizeof server_sockaddr);
-	server_sockaddr.sin_family = AF_INET;
-	server_sockaddr.sin_addr.s_addr =in_aton(server);
-	server_sockaddr.sin_port = htons(DEFAULT_RDMA_PORT);
+	// TODO: server ip and port should read from *data
 
 	src = kzalloc(strlen(test_string), GFP_KERNEL);
 	if (!src) {
@@ -278,11 +350,18 @@ static int client_main(void * data) {
 	}
 	debug("created cm_id %p\n", cb->cm_id);
 
-	ret = client_prepare_connection(cb, &server_sockaddr);
+	ret = client_prepare_connection(cb);
 	if (ret) { 
 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		goto release_cb;
+		goto exit;
 	 }
+
+	/* 
+	* Allocate pd, cq, qp, mr, freed by caller
+	*/
+	ret = krdma_init_cb(cb);
+	if (ret < 0)
+		goto exit;
 
 	// ret = client_pre_post_recv_buffer(); 
 	// if (ret) { 
@@ -297,11 +376,19 @@ static int client_main(void * data) {
 		msleep(1000);
 		debug("sleeping");
 	}
-	debug("quit");
-	return ret;
 
-release_cb:
+	if (check_src_dst()) {
+		rdma_error("src and dst buffers do not match \n");
+	} else {
+		debug("...\nSUCCESS, source and destination buffers match \n");
+	}
+
+	// free up pd, cq, qp, and mr
 	krdma_release_cb(cb);
+	debug("quit");
+	return 0;
+
+exit:
 	return -EINVAL;
 
 #ifdef TEMP_DISABLED
