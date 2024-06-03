@@ -1,7 +1,7 @@
 KDIR = /lib/modules/`uname -r`/build
 MODULE_NAME = rdma_kclient
 
-SRCS = kclient.c kcommon.c
+SRCS = kclient.c kcommon.c krdma.c
 # SRCS = kclient.c krdma.c 
 OBJS = $(SRCS:.c=.o)
 

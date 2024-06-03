@@ -12,6 +12,8 @@
 
 #include <linux/init.h>
 #include <linux/inet.h>
+#include <rdma/ib_verbs.h>
+#include <rdma/rdma_cm.h>
 
 /* Error Macro*/
 #define rdma_error(msg, args...) do {\
@@ -31,7 +33,6 @@
 
 #endif /* KRDMA_DEBUG */
 
-#ifdef TEMP_DISABLED
 /* Capacity of the completion queue (CQ) */
 #define CQ_CAPACITY (16)
 /* MAX SGE capacity */
@@ -40,6 +41,8 @@
 #define MAX_WR (8)
 /* Default port where the RDMA server is listening */
 #define DEFAULT_RDMA_PORT (20886)
+
+#ifdef TEMP_DISABLED
 
 /* 
  * We use attribute so that compiler does not step in and try to pad the structure.
