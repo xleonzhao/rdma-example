@@ -204,46 +204,120 @@ static int client_prepare_connection(struct krdma_cb *cb)
 
 }
 
-static struct ib_mr *rdma_buffer_register(struct krdma_cb *cb, 
-		void *addr, uint32_t length, 
+static int rdma_buffer_register(struct krdma_cb *cb, 
+		struct metadata_mr * data_mr,
 		enum ib_access_flags permission)
 {
-	struct ib_mr *mr = NULL;
-    u64 dma_addr;
-
-	if (!cb->pd) {
+#ifdef _OLD_CODE
+	struct ibv_mr *mr = NULL;
+	if (!pd) {
 		rdma_error("Protection domain is NULL, ignoring \n");
 		return NULL;
 	}
-
-    // create memory region
-	mr = ib_alloc_mr(cb->pd, IB_MR_TYPE_MEM_REG, length);
-	if (IS_ERR(cb->reg_mr)) {
-		ret = PTR_ERR(cb->reg_mr);
-		DEBUG_LOG(PFX "recv_buf reg_mr failed %d\n", ret);
-		goto bail;
-	}
-
-    mr = cb->pd->device->ops.get_dma_mr(cb->pd, permission);
+	mr = ibv_reg_mr(pd, addr, length, permission);
 	if (!mr) {
-		rdma_error("Failed to create mr for server metadata\n");
+		rdma_error("Failed to create mr on buffer, errno: %d \n", -errno);
 		return NULL;
 	}
-
-    // get dma_addr
-    dma_addr = ib_dma_map_single(cb->pd->device, addr, 
-            RDMA_BUFFER_SIZE, DMA_BIDIRECTIONAL);
-    if(ib_dma_mapping_error(cb->pd->device, dma_addr) == 0) {
-		rdma_error("Failed to map buffer addr to dma addr\n");
-		return NULL;
-	}
-
 	debug("Registered: %p , len: %u , stag: 0x%x \n", 
 			mr->addr, 
 			(unsigned int) mr->length, 
 			mr->lkey);
-
 	return mr;
+#endif // _OLD_CODE
+
+	struct ib_mr *mr = NULL;
+    u64 dma_addr;
+	int page_list_len;
+	struct scatterlist sg = {0};
+	int ret = -1;
+
+	void *addr = data_mr->buff;
+	uint32_t length = sizeof data_mr->buff;
+
+	if (!cb->pd) {
+		rdma_error("Protection domain is NULL, ignoring \n");
+		goto out;
+	}
+
+    // create memory region
+	page_list_len = (((length - 1) & PAGE_MASK) + PAGE_SIZE)
+				>> PAGE_SHIFT;
+	mr = ib_alloc_mr(cb->pd, IB_MR_TYPE_MEM_REG, page_list_len);
+	if (IS_ERR(mr)) {
+		ret = PTR_ERR(mr);
+		rdma_error("allocate mr failed %d\n", ret);
+		goto out;
+	}
+	debug("mr registered: rkey 0x%x page_list_len %u\n",
+		mr->rkey, page_list_len);
+
+	// if (buf == (u64)cb->start_dma_addr)
+	// 	cb->reg_mr_wr.access = IB_ACCESS_REMOTE_READ;
+	// else
+	// 	cb->reg_mr_wr.access = IB_ACCESS_REMOTE_WRITE | IB_ACCESS_LOCAL_WRITE;
+
+	dma_addr = ib_dma_map_single(cb->pd->device,
+				   addr, length, DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, dma_addr) == 0) {
+		rdma_error("Failed to map buffer addr to dma addr\n");
+		goto free_mr;
+	}
+	dma_unmap_addr_set(data_mr, dma_addr, dma_addr);
+	dma_unmap_len_set(data_mr, len, length);
+
+	sg_dma_address(&sg) = dma_addr;
+	sg_dma_len(&sg) = length;
+
+	ret = ib_map_mr_sg(mr, &sg, 1, NULL, PAGE_SIZE);
+	if (ret != 1) {
+		rdma_error("BUG: map mr to sg returns %d, should be the number of sg element\n", ret);
+		goto unmap_dma_addr;
+	}
+
+	data_mr->mr = mr;
+
+	debug("mr rkey 0x%x page size %u len %lu iova_start %llx\n",
+		mr->rkey,
+		mr->page_size,
+		(unsigned long)mr->length,
+		(unsigned long long)mr->iova);
+
+    // mr = cb->pd->device->ops.get_dma_mr(cb->pd, IB_ACCESS_REMOTE_READ | 
+    //                                  IB_ACCESS_REMOTE_WRITE | 
+    //                                  IB_ACCESS_LOCAL_WRITE);
+	// if (!mr) {
+	// 	rdma_error("Error creating MR");
+	// 	return NULL;
+	// }
+
+	// dma_addr = ib_dma_map_single(cb->pd->device,
+	// 			   addr, length, DMA_BIDIRECTIONAL);
+    // if(ib_dma_mapping_error(cb->pd->device, dma_addr) == 0) {
+	// 	rdma_error("Failed to map buffer addr to dma addr\n");
+	// 	return NULL;
+	// }
+	// dma_unmap_addr_set(cb, unmapping, dma_addr);
+
+	// debug("Registered: %p , len: %u , stag: 0x%x \n", 
+	// 		mr->addr, 
+	// 		(unsigned int) mr->length, 
+	// 		mr->lkey);
+
+	return 0;
+
+unmap_dma_addr:
+	dma_unmap_single(cb->pd->device->dma_device,
+			 dma_unmap_addr(data_mr, dma_addr),
+			 dma_unmap_len(data_mr, len), 
+			 DMA_BIDIRECTIONAL);
+
+free_mr:
+	if (mr && !IS_ERR(mr))
+		ib_dereg_mr(mr);
+
+out:
+	return ret;
 }
 
 /*
@@ -271,8 +345,8 @@ static int setup_mr(rdma_ctx_t ctx)
 }
 */
 
-static struct ib_mr *server_metadata_mr = NULL;
-static struct rdma_buffer_attr server_metadata_attr;
+static struct metadata_mr server_metadata_mr = {0};
+static struct rdma_buffer_attr server_metadata_attr = {0};
 
 /* Pre-posts a receive buffer before calling rdma_connect () */
 static int client_pre_post_recv_buffer(struct krdma_cb *cb)
@@ -282,24 +356,23 @@ static int client_pre_post_recv_buffer(struct krdma_cb *cb)
 	struct ib_rdma_wr server_recv_wr;
 	const struct ib_send_wr *bad_wr = NULL;
 
-	server_metadata_mr = rdma_buffer_register(cb,
-			&server_metadata_attr,
-			sizeof(server_metadata_attr),
+	server_metadata_mr.buff = &server_metadata_attr;
+	ret = rdma_buffer_register(cb, &server_metadata_mr,
 			(IB_ACCESS_LOCAL_WRITE));
-	if(!server_metadata_mr){
-		rdma_error("Failed to setup the server metadata mr , -ENOMEM\n");
+	if(ret < 0){
+		rdma_error("Failed to setup the server metadata mr\n");
 		return -ENOMEM;
 	}
 
 	memset(server_recv_sge, 0, sizeof(struct ib_sge));
 	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
 
-	server_recv_sge[0].addr = (uint64_t) server_metadata_mr->addr;
-	server_recv_sge[0].length = (uint32_t) server_metadata_mr->length;
-	server_recv_sge[0].lkey = (uint32_t) server_metadata_mr->lkey;
+	server_recv_sge[0].addr = (uint64_t) server_metadata_mr.dma_addr;
+	server_recv_sge[0].length = (uint32_t) server_metadata_mr.len;
+	server_recv_sge[0].lkey = (uint32_t) server_metadata_mr.mr->lkey;
 
 	/* now we link it to the request */
-	bzero(&server_recv_wr, sizeof(server_recv_wr));
+	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
 	server_recv_wr.sg_list = server_recv_sge;
 	server_recv_wr.num_sge = 1;
 	ret = ib_post_recv(cb->qp /* which QP */,
@@ -363,11 +436,11 @@ static int client_main(void * data) {
 	if (ret < 0)
 		goto exit;
 
-	// ret = client_pre_post_recv_buffer(); 
-	// if (ret) { 
-	// 	rdma_error("Failed to setup client connection , ret = %d \n", ret);
-	// 	return ret;
-	// }
+	ret = client_pre_post_recv_buffer(); 
+	if (ret) { 
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+		return ret;
+	}
 
 	debug("hello");
 	debug("server is %s\n", server);

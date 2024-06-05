@@ -59,6 +59,13 @@ struct __attribute((packed)) rdma_buffer_attr {
   }stag;
 };
 
+struct metadata_mr {
+	struct ib_mr *mr;
+	struct rdma_buffer_attr * buff;
+	DEFINE_DMA_UNMAP_ADDR(dma_addr);
+	DEFINE_DMA_UNMAP_LEN(len);
+};
+
 #ifdef TEMP_DISABLED
 
 int client_disconnect_and_clean();

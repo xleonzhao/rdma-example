@@ -8,7 +8,6 @@
 #include "kcommon.h"
 #include "krdma.h"
 
-
 #ifdef TEMP_DISABLED
 /* This function disconnects the RDMA connection from the server and cleans up 
  * all the resources.
