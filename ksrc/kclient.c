@@ -20,13 +20,13 @@
 #include "kcommon.h"
 #include "krdma.h"
 
-static struct task_struct *thread = NULL;
+static bool thread_running = false;
 
 #define IPADDR_LEN 16
 static char server[IPADDR_LEN]={0}; // server ip address
 module_param_string(server, server, IPADDR_LEN, S_IRUGO);
 
-static int port = 19923; // server port number
+static int port = 20886; // server port number
 module_param(port, int, S_IRUGO);
 
 static struct sockaddr_in server_sockaddr = {0};
@@ -121,7 +121,7 @@ static int client_prepare_connection(struct krdma_cb *cb)
 			ntohs(s_addr->sin_port));
 #endif //_OLD_CODE
 
-	ret = __krdma_bound_dev_remote(cb, server, DEFAULT_RDMA_PORT);
+	ret = __krdma_bound_dev_remote(cb, server, port);
 	if (ret)
 		return ret;
 
@@ -226,6 +226,7 @@ static int rdma_buffer_register(struct krdma_cb *cb,
 	return mr;
 #endif // _OLD_CODE
 
+#ifdef _OLD_CODE2
 	struct ib_mr *mr = NULL;
     u64 dma_addr;
 	int page_list_len;
@@ -260,7 +261,7 @@ static int rdma_buffer_register(struct krdma_cb *cb,
 	dma_addr = ib_dma_map_single(cb->pd->device,
 				   addr, length, DMA_BIDIRECTIONAL);
     if(ib_dma_mapping_error(cb->pd->device, dma_addr) == 0) {
-		rdma_error("Failed to map buffer addr to dma addr\n");
+		rdma_error("Failed to map buffer addr to dma addr, addr=%p, length=%d\n", addr, length);
 		goto free_mr;
 	}
 	dma_unmap_addr_set(data_mr, dma_addr, dma_addr);
@@ -318,44 +319,22 @@ free_mr:
 
 out:
 	return ret;
+#endif // _OLD_CODE2
+	return 0;
 }
 
-/*
-static int setup_mr(rdma_ctx_t ctx)
-{
-    // create receive buffer
-    ctx->rdma_recv_buffer = kmalloc(RDMA_BUFFER_SIZE, GFP_KERNEL);
-    CHECK_MSG_RET(ctx->rdma_recv_buffer != 0, "Error kmalloc", -1);
-
-    // create memory region
-    ctx->mr = rdma_dev.dev->ops.get_dma_mr(ctx->pd, IB_ACCESS_REMOTE_READ | 
-                                     IB_ACCESS_REMOTE_WRITE | 
-                                     IB_ACCESS_LOCAL_WRITE);
-    CHECK_MSG_RET(ctx->mr != 0, "Error creating MR", -1);
-
-    ctx->rkey = ctx->mr->rkey;
-
-    // get dma_addr
-    ctx->dma_addr = ib_dma_map_single(rdma_dev.dev, ctx->rdma_recv_buffer, 
-            RDMA_BUFFER_SIZE, DMA_BIDIRECTIONAL);
-    CHECK_MSG_RET(ib_dma_mapping_error(rdma_dev.dev, ctx->dma_addr) == 0,
-            "Error ib_dma_map_single", -1);
-
-    return 0;
-}
-*/
-
-static struct metadata_mr server_metadata_mr = {0};
-static struct rdma_buffer_attr server_metadata_attr = {0};
+// static struct metadata_mr server_metadata_mr = {0};
+// static struct rdma_buffer_attr server_metadata_attr = {0};
 
 /* Pre-posts a receive buffer before calling rdma_connect () */
 static int client_pre_post_recv_buffer(struct krdma_cb *cb)
 {
 	int ret = -1;
 	struct ib_sge server_recv_sge[1];
-	struct ib_rdma_wr server_recv_wr;
-	const struct ib_send_wr *bad_wr = NULL;
+	struct ib_recv_wr server_recv_wr;
+	const struct ib_recv_wr *bad_wr = NULL;
 
+#ifdef _OLD_CODE2
 	server_metadata_mr.buff = &server_metadata_attr;
 	ret = rdma_buffer_register(cb, &server_metadata_mr,
 			(IB_ACCESS_LOCAL_WRITE));
@@ -370,11 +349,19 @@ static int client_pre_post_recv_buffer(struct krdma_cb *cb)
 	server_recv_sge[0].addr = (uint64_t) server_metadata_mr.dma_addr;
 	server_recv_sge[0].length = (uint32_t) server_metadata_mr.len;
 	server_recv_sge[0].lkey = (uint32_t) server_metadata_mr.mr->lkey;
-
-	/* now we link it to the request */
-	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
 	server_recv_wr.sg_list = server_recv_sge;
 	server_recv_wr.num_sge = 1;
+#endif // _OLD_CODE2
+
+	memset(server_recv_sge, 0, sizeof(struct ib_sge));
+	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
+
+	server_recv_sge[0].addr = cb->mr.rw_mr.local_info->dma_addr;
+	server_recv_sge[0].length = cb->mr.rw_mr.local_info->length;
+	server_recv_sge[0].lkey = cb->mr.mr->lkey;
+	server_recv_wr.sg_list = server_recv_sge;
+	server_recv_wr.num_sge = 1;
+
 	ret = ib_post_recv(cb->qp /* which QP */,
 		      &server_recv_wr /* receive work request*/,
 		      &bad_wr /* error WRs */);
@@ -383,7 +370,37 @@ static int client_pre_post_recv_buffer(struct krdma_cb *cb)
 		return ret;
 	}
 	debug("Receive buffer pre-posting is successful \n");
+
 	return 0;
+}
+
+static int client_connect_to_server(struct krdma_cb *cb)
+{
+	struct rdma_conn_param conn_param;
+	int ret = -1;
+
+	memset(&conn_param, 0, sizeof conn_param);
+	conn_param.responder_resources = 3;
+	conn_param.initiator_depth = 3;
+	conn_param.retry_count = 3;
+
+	ret = rdma_connect(cb->cm_id, &conn_param);
+	if (ret) {
+		krdma_err("rdma_connect error %d\n", ret);
+		return ret;
+	}
+
+	wait_for_completion(&cb->cm_done);
+	if (cb->state != KRDMA_CONNECTED) {
+		krdma_err("wait for KRDMA_CONNECTED state, but get %d\n", cb->state);
+		goto exit;
+	}
+
+	debug("rdma_connect successful\n");
+	return 0;
+
+exit:
+	return ret;
 }
 
 static int client_main(void * data) {
@@ -436,7 +453,17 @@ static int client_main(void * data) {
 	if (ret < 0)
 		goto exit;
 
-	ret = client_pre_post_recv_buffer(); 
+	ret = krdma_setup_mr(cb);
+	if (ret < 0)
+		goto free_cb;
+
+	ret = client_pre_post_recv_buffer(cb); 
+	if (ret) { 
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+		goto free_cb;
+	}
+
+	ret = client_connect_to_server(cb);
 	if (ret) { 
 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
 		return ret;
@@ -445,6 +472,7 @@ static int client_main(void * data) {
 	debug("hello");
 	debug("server is %s\n", server);
 	debug("src is %s\n", src);
+	thread_running = true;
 	while (!kthread_should_stop()) {
 		msleep(1000);
 		debug("sleeping");
@@ -461,7 +489,12 @@ static int client_main(void * data) {
 	debug("quit");
 	return 0;
 
+free_cb:
+	krdma_release_cb(cb);
+
 exit:
+	debug("error occurred, abort");
+	thread_running = false;
 	return -EINVAL;
 
 #ifdef TEMP_DISABLED
@@ -496,6 +529,8 @@ exit:
 
 /////////////////////////////////////////////////////////////
 
+static struct task_struct *thread = NULL;
+
 int __init kclient_init(void) {
 	int ret;
 
@@ -510,10 +545,12 @@ int __init kclient_init(void) {
 
 void __exit kclient_exit(void) {
 	int ret;
-	send_sig(SIGKILL, thread, 1);
-	ret = kthread_stop(thread);
-	if (ret < 0) {
-		rdma_error("kill thread failed.\n");
+	if (thread_running) {
+		send_sig(SIGKILL, thread, 1);
+		ret = kthread_stop(thread);
+		if (ret < 0) {
+			rdma_error("kill thread failed.\n");
+		}
 	}
 }
 

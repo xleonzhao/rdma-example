@@ -9,6 +9,40 @@
 #include "krdma.h"
 
 #ifdef TEMP_DISABLED
+
+/* Connects to the RDMA server */
+static int client_connect_to_server() 
+{
+	struct rdma_conn_param conn_param;
+	struct rdma_cm_event *cm_event = NULL;
+	int ret = -1;
+	bzero(&conn_param, sizeof(conn_param));
+	conn_param.initiator_depth = 3;
+	conn_param.responder_resources = 3;
+	conn_param.retry_count = 3; // if fail, then how many times to retry
+	ret = rdma_connect(cm_client_id, &conn_param);
+	if (ret) {
+		rdma_error("Failed to connect to remote host , errno: %d\n", -errno);
+		return -errno;
+	}
+	debug("waiting for cm event: RDMA_CM_EVENT_ESTABLISHED\n");
+	ret = process_rdma_cm_event(cm_event_channel, 
+			RDMA_CM_EVENT_ESTABLISHED,
+			&cm_event);
+	if (ret) {
+		rdma_error("Failed to get cm event, ret = %d \n", ret);
+	       return ret;
+	}
+	ret = rdma_ack_cm_event(cm_event);
+	if (ret) {
+		rdma_error("Failed to acknowledge cm event, errno: %d\n", 
+			       -errno);
+		return -errno;
+	}
+	printf("The client is connected successfully \n");
+	return 0;
+}
+
 /* This function disconnects the RDMA connection from the server and cleans up 
  * all the resources.
  */
