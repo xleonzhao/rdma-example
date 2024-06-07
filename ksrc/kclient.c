@@ -29,7 +29,7 @@ module_param_string(server, server, IPADDR_LEN, S_IRUGO);
 static int port = 20886; // server port number
 module_param(port, int, S_IRUGO);
 
-static struct sockaddr_in server_sockaddr = {0};
+// static struct sockaddr_in server_sockaddr = {0};
 /* Source and Destination buffers, where RDMA operations source and sink */
 static char *src = NULL, *dst = NULL; 
 const char test_string[] = "hello, world";
@@ -41,44 +41,41 @@ static int check_src_dst(void)
 }
 
 /* This function prepares client side connection resources for an RDMA connection */
-static int client_prepare_connection(struct krdma_cb *cb)
+static int client_init_rdma(struct krdma_cb *cb)
 {
 	int ret = -1;
+
+	/* Create cm_id */
+	cb->cm_id = rdma_create_id(&init_net, krdma_cma_event_handler, cb,
+					RDMA_PS_TCP, IB_QPT_RC);
+	if (IS_ERR(cb->cm_id)) {
+		ret = PTR_ERR(cb->cm_id);
+		rdma_error("rdma_create_id error %d\n", ret);
+		goto exit;
+	}
+	debug("created cm_id %p\n", cb->cm_id);
 
 	ret = krdma_resolve_remote(cb, server, port);
 	if (ret)
-		return ret;
+		goto exit;
+	/* 
+	* Allocate pd, cq, qp, mr, freed by caller
+	*/
+	ret = krdma_init_cb(cb);
+	if (ret < 0)
+		goto exit;
+
+	ret = krdma_setup_mr(cb);
+	if (ret < 0)
+		goto free_cb;
 
 	return 0;
-}
 
-/* Pre-posts a receive buffer before calling rdma_connect () */
-static int client_pre_post_recv_buffer(struct krdma_cb *cb)
-{
-	int ret = -1;
-	struct ib_sge server_recv_sge[1];
-	struct ib_recv_wr server_recv_wr;
-	const struct ib_recv_wr *bad_wr = NULL;
+free_cb:
+	krdma_free_cb(cb);
 
-	memset(server_recv_sge, 0, sizeof(struct ib_sge));
-	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
-
-	server_recv_sge[0].addr = cb->mr.rw_mr.local_info->dma_addr;
-	server_recv_sge[0].length = cb->mr.rw_mr.local_info->length;
-	server_recv_sge[0].lkey = cb->mr.mr->lkey;
-	server_recv_wr.sg_list = server_recv_sge;
-	server_recv_wr.num_sge = 1;
-
-	ret = ib_post_recv(cb->qp /* which QP */,
-		      &server_recv_wr /* receive work request*/,
-		      &bad_wr /* error WRs */);
-	if (ret) {
-		rdma_error("Failed to pre-post the receive buffer, errno: %d \n", ret);
-		return ret;
-	}
-	debug("Receive buffer pre-posting is successful \n");
-
-	return 0;
+exit:
+	return ret;
 }
 
 static int client_connect_to_server(struct krdma_cb *cb)
@@ -110,13 +107,7 @@ exit:
 	return ret;
 }
 
-static int client_main(void * data) {
-	int ret = 0;
-	src = dst = NULL; 
-	struct krdma_cb *cb;
-
-	// TODO: server ip and port should read from *data
-
+static int client_init(void) {
 	src = kzalloc(strlen(test_string), GFP_KERNEL);
 	if (!src) {
 		rdma_error("Failed to allocate memory : -ENOMEM\n");
@@ -131,49 +122,120 @@ static int client_main(void * data) {
 		return -ENOMEM;
 	}
 
-	ret = __krdma_create_cb(&cb, KRDMA_CLIENT_CONN);
+	return 0;
+}
+
+/* Exchange buffer metadata with the server. The client sends its, and then receives
+ * from the server. The client-side metadata on the server is _not_ used because
+ * this program is client driven. But it shown here how to do it for the illustration
+ * purposes
+ */
+static int client_xchange_metadata_with_server(struct krdma_cb *cb)
+{
+	int ret = -1;
+	// struct ibv_wc wc[2];
+	struct scatterlist sg[2];
+
+	struct ib_sge server_recv_sge[1];
+	struct ib_recv_wr server_recv_wr;
+	const struct ib_recv_wr *bad_recv_wr = NULL;
+	struct ib_sge client_send_sge[1];
+	struct ib_send_wr client_send_wr;
+	const struct ib_send_wr *bad_send_wr = NULL;
+
+	// create scatterlist and map it to mr to get lkey working
+	memset(server_recv_sge, 0, sizeof(struct ib_sge));
+	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
+
+	server_recv_sge[0].addr = cb->mr.rw_mr.remote_info->dma_addr;
+	server_recv_sge[0].length = cb->mr.rw_mr.remote_info->length;
+	server_recv_sge[0].lkey = cb->mr.mr->lkey;
+
+	memset(client_send_sge, 0, sizeof(struct ib_sge));
+	memset(&client_send_wr, 0, sizeof(client_send_wr));
+
+	client_send_sge[0].addr = cb->mr.rw_mr.local_info->dma_addr;
+	client_send_sge[0].length = cb->mr.rw_mr.local_info->length;
+	client_send_sge[0].rkey = cb->mr.mr->rkey;
+
+	sg_dma_address(&sg[0]) = server_recv_sge[0].addr;
+	sg_dma_len(&sg[0]) = server_recv_sge[0].length;
+	sg_dma_address(&sg[1]) = client_send_sge[0].addr;
+	sg_dma_len(&sg[1]) = client_send_sge[0].length;
+
+	ret = ib_map_mr_sg(cb->mr.mr, sg, 2, NULL, PAGE_SIZE);
+	if (ret != 2) {
+		rdma_error("BUG: map mr to sg returns %d, should be the number of sg element\n", ret);
+		return ret;
+	}
+
+	// get ready for receiving server info
+	server_recv_wr.sg_list = server_recv_sge;
+	server_recv_wr.num_sge = 1;
+
+	ret = ib_post_recv(cb->qp /* which QP */,
+		      &server_recv_wr /* receive work request*/,
+		      &bad_recv_wr /* error WRs */);
 	if (ret) {
-		rdma_error("__krdma_create_cb fail, ret %d\n", ret);
-		return -ENOMEM;
+		rdma_error("Failed to pre-post the receive buffer, errno: %d \n", ret);
+		return ret;
+	}
+	debug("Receive buffer posting is successful \n");
+
+	// now preparing data to send to server
+	client_send_wr.sg_list = client_send_sge;
+	client_send_wr.num_sge = 1;
+	client_send_wr.opcode = IB_WR_SEND;
+	client_send_wr.send_flags = IB_SEND_SIGNALED;
+	/* Now we post it */
+	ret = ib_post_send(cb->qp, 
+		    	&client_send_wr,
+	       		&bad_send_wr);
+	if (ret) {
+		rdma_error("Failed to send client metadata, ret: %d \n", ret);
+		return ret;
+	}
+	debug("Send posting is successful \n");
+
+	/* at this point we are expecting 2 work completion. One for our 
+	 * send and one for recv that we will get from the server for 
+	 * its buffer information */
+	wait_for_completion(&cb->cm_done);
+
+	return 0;
+}
+
+static int client_main(void * data) {
+	int ret = -1;
+	src = dst = NULL; 
+	struct krdma_cb *cb;
+
+	if (client_init() != 0) {
+		goto exit;
 	}
 
-	/* Create cm_id */
-	cb->cm_id = rdma_create_id(&init_net, krdma_cma_event_handler, cb,
-					RDMA_PS_TCP, IB_QPT_RC);
-	if (IS_ERR(cb->cm_id)) {
-		ret = PTR_ERR(cb->cm_id);
-		rdma_error("rdma_create_id error %d\n", ret);
-		return -EINVAL;
+	ret = krdma_alloc_cb(&cb, KRDMA_CLIENT_CONN);
+	if (ret) {
+		rdma_error("alloc cb fail, ret %d\n", ret);
+		goto exit;
 	}
-	debug("created cm_id %p\n", cb->cm_id);
 
-	ret = client_prepare_connection(cb);
-	if (ret) { 
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+	client_init_rdma(cb);
+	if (!cb) { 
+		rdma_error("Failed to initialize RDMA resources\n");
 		goto exit;
 	 }
-
-	/* 
-	* Allocate pd, cq, qp, mr, freed by caller
-	*/
-	ret = krdma_init_cb(cb);
-	if (ret < 0)
-		goto exit;
-
-	ret = krdma_setup_mr(cb);
-	if (ret < 0)
-		goto free_cb;
-
-	ret = client_pre_post_recv_buffer(cb); 
-	if (ret) { 
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		goto free_cb;
-	}
 
 	ret = client_connect_to_server(cb);
 	if (ret) { 
 		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
+		goto exit;
+	}
+
+	ret = client_xchange_metadata_with_server(cb);
+	if (ret) {
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
+		goto exit;
 	}
 
 	debug("hello");
@@ -192,29 +254,19 @@ static int client_main(void * data) {
 	}
 
 	// free up pd, cq, qp, and mr
-	krdma_release_cb(cb);
+	krdma_free_cb(cb);
 	debug("quit");
 	return 0;
 
-free_cb:
-	krdma_release_cb(cb);
-
 exit:
+	if (cb)
+		krdma_free_cb(cb);
+
 	debug("error occurred, abort");
 	thread_running = false;
 	return -EINVAL;
 
 #ifdef TEMP_DISABLED
-	ret = client_connect_to_server();
-	if (ret) { 
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
-	}
-	ret = client_xchange_metadata_with_server();
-	if (ret) {
-		rdma_error("Failed to setup client connection , ret = %d \n", ret);
-		return ret;
-	}
 	ret = client_remote_memory_ops();
 	if (ret) {
 		rdma_error("Failed to finish remote memory ops, ret = %d \n", ret);
