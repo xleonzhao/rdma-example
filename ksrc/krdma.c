@@ -32,14 +32,51 @@ static bool dbg = 1;
 
 /* MR for RDMA read write */
 int krdma_setup_mr(struct krdma_cb *cb) {
-	krdma_rw_info_t *local_info;
-	krdma_rw_info_t *remote_info;
+	if (!cb)
+		return -1;
+
+	krdma_rw_info_t *local_info = &cb->local_info;
+	krdma_rw_info_t *remote_info = &cb->remote_info;
 	struct ib_port_attr port_attr;
 	int page_list_len;
 	struct ib_mr *mr;
-	dma_addr_t dma_addr;
-	void *buf;
+	void *local_buf=NULL, *remote_buf=NULL;
+	dma_addr_t local_dma_addr=0L, remote_dma_addr=0L;
 	int ret;
+	struct scatterlist sg = {0};
+
+	// allocate space for local use
+	local_buf = kmalloc(RDMA_RDWR_BUF_LEN, GFP_KERNEL);
+	remote_buf = kmalloc(RDMA_RDWR_BUF_LEN, GFP_KERNEL);
+	if (!local_buf || !remote_buf) {
+		krdma_err("buf alloc failed.\n");
+		// goto free_buf;
+		goto exit;
+	}
+	local_info->buf = local_buf;
+	local_info->length = RDMA_RDWR_BUF_LEN;	
+	remote_info->buf = remote_buf;
+	remote_info->length = RDMA_RDWR_BUF_LEN;
+
+	local_dma_addr = ib_dma_map_single(cb->cm_id->device,
+				   local_info->buf, local_info->length, DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, local_dma_addr)) {
+		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
+			local_info->buf, local_info->length);
+		// goto free_buf;
+		goto exit;
+	}
+	local_info->dma_addr = local_dma_addr;
+
+	remote_dma_addr = ib_dma_map_single(cb->cm_id->device,
+				   remote_info->buf, remote_info->length, DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, remote_dma_addr)) {
+		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
+			remote_info->buf, remote_info->length);
+		// goto unmap_dma_addr;
+		goto exit;
+	}
+	remote_info->dma_addr = remote_dma_addr;
 
     // create memory region
 	page_list_len = (((sizeof(krdma_rw_info_t) - 1) & PAGE_MASK) + PAGE_SIZE)
@@ -48,91 +85,82 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	if (IS_ERR(mr)) {
 		ret = PTR_ERR(mr);
 		krdma_err("allocate mr failed %d\n", ret);
+		// goto unmap_dma_addr;
 		goto exit;
 	}
-	cb->mr.mr = mr;
+	cb->mr = mr;
+	cb->page_list_len = page_list_len;
 	krdma_debug("mr registered: rkey 0x%x page_list_len %u\n",
 		mr->rkey, page_list_len);
 
-	local_info = kzalloc(sizeof(krdma_rw_info_t), GFP_KERNEL);
-	if (!local_info) {
-		krdma_err("local_info alloc failed.\n");
-		goto out_free_mr;
+	sg_dma_address(&sg) = remote_info->dma_addr;
+	sg_dma_len(&sg) = remote_info->length;
+	ret = ib_map_mr_sg(cb->mr, &sg, 1, NULL, PAGE_SIZE);
+	if(ret <= 0 || ret > cb->page_list_len) {
+		krdma_err("map mr to sg error, ret %d\n", ret);
+		// goto free_mr;
+		goto exit;
 	}
-	cb->mr.rw_mr.local_info = local_info;
+	remote_info->rkey = mr->rkey;
 
-	remote_info = kzalloc(sizeof(krdma_rw_info_t), GFP_KERNEL);
-	if (!remote_info) {
-		krdma_err("remote_info alloc failed.\n");
-		goto out_free_local_info;
-	}
-	cb->mr.rw_mr.remote_info = remote_info;
-
-	buf = kmalloc(RDMA_RDWR_BUF_LEN, GFP_KERNEL);
-	if (!buf) {
-		krdma_err("buf alloc failed.\n");
-		goto out_free_remote_info;
-	}
-	local_info->buf = buf;
-	local_info->length = RDMA_RDWR_BUF_LEN;
-
-	dma_addr = ib_dma_map_single(cb->cm_id->device,
-				   local_info->buf, local_info->length, DMA_BIDIRECTIONAL);
-    if(ib_dma_mapping_error(cb->pd->device, dma_addr)) {
-		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
-			local_info->buf, local_info->length);
-		goto out_free_buf;
-	}
-
-	// local_info->dma_addr = __krdma_virt_to_dma(cb, local_info->buf, local_info->length, 1);
-	local_info->dma_addr = dma_addr;
-	local_info->rkey = cb->pd->unsafe_global_rkey;
-	local_info->qp_num = cb->qp->qp_num;
-	
 	ret = ib_query_port(cb->cm_id->device, cb->cm_id->port_num, &port_attr);
 	if (ret) {
 		krdma_err("ib_query_port failed.\n");
-		goto out_unmap_dma;
+		// goto free_mr;
+		goto exit;
 	}
-
 	local_info->lid = port_attr.lid;
-
+	local_info->qp_num = cb->qp->qp_num;
+	
 	return 0;
 
-out_unmap_dma:
-	ib_dma_unmap_single(cb->cm_id->device,
-				   local_info->dma_addr, local_info->length, DMA_BIDIRECTIONAL);
-	cb->mr.rw_mr.local_info->dma_addr = 0L;
+// free_mr:
+// 	if (cb->mr)
+// 		ib_dereg_mr(cb->mr);
 
-out_free_buf:
-	kfree(buf);
-	cb->mr.rw_mr.local_info->buf = NULL;
+// unmap_dma_addr:
+// 	if (cb->local_info.dma_addr)
+// 		ib_dma_unmap_single(cb->cm_id->device,
+// 				   cb->local_info.dma_addr, cb->local_info.length, DMA_BIDIRECTIONAL);
+// 	if (cb->remote_info.dma_addr)
+// 		ib_dma_unmap_single(cb->cm_id->device,
+// 				   cb->remote_info.dma_addr, cb->remote_info.length, DMA_BIDIRECTIONAL);
 
-out_free_remote_info:
-	kfree(remote_info);
-	cb->mr.rw_mr.remote_info = NULL;
+// free_buf:
+// 	if (local_buf)
+// 		kfree(local_buf);
+// 	if (remote_buf)
+// 		kfree(remote_buf);
 
-out_free_local_info:
-	kfree(local_info);
-	cb->mr.rw_mr.local_info = NULL;
-
-out_free_mr:
-	if (cb->mr.mr)
-		ib_dereg_mr(cb->mr.mr);
 exit:
+	krdma_free_mr(cb);
 	return -ENOMEM;
 }
 
 void krdma_free_mr(struct krdma_cb *cb) {
-	if (cb->mr.rw_mr.local_info->buf)
-		kfree(cb->mr.rw_mr.local_info->buf);
-	if (cb->mr.rw_mr.remote_info) {
-		kfree(cb->mr.rw_mr.remote_info);
-		cb->mr.rw_mr.remote_info = NULL;
+	if (cb->mr) {
+		ib_dereg_mr(cb->mr);
+		cb->mr = NULL;
 	}
-	if (cb->mr.rw_mr.local_info) {
-		kfree(cb->mr.rw_mr.local_info);
-		cb->mr.rw_mr.local_info = NULL;
+
+	if (cb->local_info.dma_addr) {
+		ib_dma_unmap_single(cb->cm_id->device,
+				   cb->local_info.dma_addr, cb->local_info.length, DMA_BIDIRECTIONAL);
+		cb->local_info.dma_addr = 0L;
+	}
+	if (cb->remote_info.dma_addr) {
+		ib_dma_unmap_single(cb->cm_id->device,
+				   cb->remote_info.dma_addr, cb->remote_info.length, DMA_BIDIRECTIONAL);
+		cb->remote_info.dma_addr = 0L;
+	}
+
+	if (cb->local_info.buf) {
+		kfree(cb->local_info.buf);
+		cb->local_info.buf = NULL;
+	}
+	if (cb->remote_info.buf) {
+		kfree(cb->remote_info.buf);
+		cb->remote_info.buf = NULL;
 	}
 }
 
@@ -158,7 +186,7 @@ int krdma_alloc_cb(struct krdma_cb **cbp, enum krdma_role role)
 	return 0;
 }
 
-void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
+static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
 {
 	struct krdma_cb *cb = ctx;
 	struct ib_wc wc;
@@ -364,6 +392,7 @@ int krdma_free_cb(struct krdma_cb *cb)
 	}
 
 	kfree(cb);
+	cb = NULL;
 	return 0;
 }
 

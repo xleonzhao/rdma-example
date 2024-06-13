@@ -67,12 +67,9 @@ static int client_init_rdma(struct krdma_cb *cb)
 
 	ret = krdma_setup_mr(cb);
 	if (ret < 0)
-		goto free_cb;
+		goto exit;
 
 	return 0;
-
-free_cb:
-	krdma_free_cb(cb);
 
 exit:
 	return ret;
@@ -134,42 +131,20 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 {
 	int ret = -1;
 	// struct ibv_wc wc[2];
-	struct scatterlist sg[2];
+	// struct scatterlist sg[2];
 
 	struct ib_sge server_recv_sge[1];
 	struct ib_recv_wr server_recv_wr;
 	const struct ib_recv_wr *bad_recv_wr = NULL;
-	struct ib_sge client_send_sge[1];
-	struct ib_send_wr client_send_wr;
-	const struct ib_send_wr *bad_send_wr = NULL;
+	// dma_addr_t dma_addr;
 
-	// create scatterlist and map it to mr to get lkey working
+	// get ready for receiving server info
 	memset(server_recv_sge, 0, sizeof(struct ib_sge));
 	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
 
-	server_recv_sge[0].addr = cb->mr.rw_mr.remote_info->dma_addr;
-	server_recv_sge[0].length = cb->mr.rw_mr.remote_info->length;
-	server_recv_sge[0].lkey = cb->mr.mr->lkey;
-
-	memset(client_send_sge, 0, sizeof(struct ib_sge));
-	memset(&client_send_wr, 0, sizeof(client_send_wr));
-
-	client_send_sge[0].addr = cb->mr.rw_mr.local_info->dma_addr;
-	client_send_sge[0].length = cb->mr.rw_mr.local_info->length;
-	client_send_sge[0].rkey = cb->mr.mr->rkey;
-
-	sg_dma_address(&sg[0]) = server_recv_sge[0].addr;
-	sg_dma_len(&sg[0]) = server_recv_sge[0].length;
-	sg_dma_address(&sg[1]) = client_send_sge[0].addr;
-	sg_dma_len(&sg[1]) = client_send_sge[0].length;
-
-	ret = ib_map_mr_sg(cb->mr.mr, sg, 2, NULL, PAGE_SIZE);
-	if (ret != 2) {
-		rdma_error("BUG: map mr to sg returns %d, should be the number of sg element\n", ret);
-		return ret;
-	}
-
-	// get ready for receiving server info
+	server_recv_sge[0].addr = cb->remote_info.dma_addr;
+	server_recv_sge[0].length = cb->remote_info.length;
+	server_recv_sge[0].lkey = cb->pd->unsafe_global_rkey;
 	server_recv_wr.sg_list = server_recv_sge;
 	server_recv_wr.num_sge = 1;
 
@@ -183,10 +158,21 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	debug("Receive buffer posting is successful \n");
 
 	// now preparing data to send to server
+	struct ib_sge client_send_sge[1];
+	struct ib_send_wr client_send_wr;
+	const struct ib_send_wr *bad_send_wr = NULL;
+
+	memset(client_send_sge, 0, sizeof(struct ib_sge));
+	memset(&client_send_wr, 0, sizeof(client_send_wr));
+
+	client_send_sge[0].addr = cb->local_info.dma_addr;
+	client_send_sge[0].length = cb->local_info.length;
+	client_send_sge[0].lkey = cb->mr->rkey;
 	client_send_wr.sg_list = client_send_sge;
 	client_send_wr.num_sge = 1;
 	client_send_wr.opcode = IB_WR_SEND;
 	client_send_wr.send_flags = IB_SEND_SIGNALED;
+
 	/* Now we post it */
 	ret = ib_post_send(cb->qp, 
 		    	&client_send_wr,
@@ -220,11 +206,11 @@ static int client_main(void * data) {
 		goto exit;
 	}
 
-	client_init_rdma(cb);
-	if (!cb) { 
+	ret = client_init_rdma(cb);
+	if (ret) { 
 		rdma_error("Failed to initialize RDMA resources\n");
 		goto exit;
-	 }
+	}
 
 	ret = client_connect_to_server(cb);
 	if (ret) { 
@@ -290,7 +276,7 @@ exit:
 
 static struct task_struct *thread = NULL;
 
-int __init kclient_init(void) {
+static int __init kclient_init(void) {
 	int ret;
 
 	thread = kthread_run(client_main, NULL, "krdma_client");
@@ -302,7 +288,7 @@ int __init kclient_init(void) {
     return 0;
 }
 
-void __exit kclient_exit(void) {
+static void __exit kclient_exit(void) {
 	int ret;
 	if (thread_running) {
 		send_sig(SIGKILL, thread, 1);

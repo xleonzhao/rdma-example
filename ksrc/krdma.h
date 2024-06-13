@@ -72,10 +72,10 @@ typedef enum {
 enum krdma_trans_state { INVALID = 0, POSTED, POLLED };
 
 typedef struct krdma_rw_info {
-	void *buf;
+	void *buf; // CPU address
 	size_t length;
-	dma_addr_t dma_addr;
-	uint32_t rkey;
+	dma_addr_t dma_addr; // DMA address
+	uint32_t rkey; // key for remote entity to access local memory
 	uint32_t qp_num;
 	uint16_t lid;
 } __attribute__((packed)) krdma_rw_info_t;
@@ -145,13 +145,18 @@ struct krdma_cb {
 	 */
 	// Set to false in all send/recv APIs
 	// bool read_write; // which mr?
-	struct {
-		struct ib_mr *mr;
-		struct {
-			krdma_rw_info_t *local_info;
-			krdma_rw_info_t *remote_info;
-		} rw_mr;
-	} mr;
+	// struct {
+	// 	struct ib_mr *mr;
+	// 	struct {
+	// 		krdma_rw_info_t *local_info;
+	// 		krdma_rw_info_t *remote_info;
+	// 	} rw_mr;
+	// } mr;
+
+	struct ib_mr *mr;
+	krdma_rw_info_t local_info;
+	krdma_rw_info_t remote_info;
+	int page_list_len;
 
 	struct completion cm_done;
 
