@@ -165,9 +165,14 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(client_send_sge, 0, sizeof(struct ib_sge));
 	memset(&client_send_wr, 0, sizeof(client_send_wr));
 
-	client_send_sge[0].addr = cb->local_info.dma_addr;
-	client_send_sge[0].length = cb->local_info.length;
-	client_send_sge[0].lkey = cb->mr->rkey;
+	struct krdma_buffer_info *info = (struct krdma_buffer_info *)&(cb->remote_info.buf);
+	info->dma_addr = cb->remote_info.dma_addr;
+	info->size = cb->remote_info.length;
+	info->rkey = cb->mr->rkey;
+
+	client_send_sge[0].addr = cb->remote_info.dma_addr;
+	client_send_sge[0].length = sizeof(struct krdma_buffer_info);
+	client_send_sge[0].lkey = cb->mr->lkey;
 	client_send_wr.sg_list = client_send_sge;
 	client_send_wr.num_sge = 1;
 	client_send_wr.opcode = IB_WR_SEND;

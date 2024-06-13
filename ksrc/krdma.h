@@ -80,6 +80,12 @@ typedef struct krdma_rw_info {
 	uint16_t lid;
 } __attribute__((packed)) krdma_rw_info_t;
 
+struct krdma_buffer_info {
+	uint64_t dma_addr;
+	uint32_t size;
+	uint32_t rkey;
+};
+
 typedef struct krdma_send_trans {
 	/* For DMA */
 	void *send_buf;
@@ -140,23 +146,13 @@ struct krdma_cb {
 	/* Queue Pair */
 	struct ib_qp *qp;
 
-	/*
-	 * The buffers to buffer async requests.
-	 */
-	// Set to false in all send/recv APIs
-	// bool read_write; // which mr?
-	// struct {
-	// 	struct ib_mr *mr;
-	// 	struct {
-	// 		krdma_rw_info_t *local_info;
-	// 		krdma_rw_info_t *remote_info;
-	// 	} rw_mr;
-	// } mr;
-
 	struct ib_mr *mr;
 	krdma_rw_info_t local_info;
 	krdma_rw_info_t remote_info;
 	int page_list_len;
+
+	// struct krdma_buffer_info local_buf __aligned(16);
+	// struct krdma_buffer_info remote_buf __aligned(16);
 
 	struct completion cm_done;
 
