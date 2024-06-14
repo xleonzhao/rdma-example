@@ -151,9 +151,6 @@ struct krdma_cb {
 	krdma_rw_info_t remote_info;
 	int page_list_len;
 
-	// struct krdma_buffer_info local_buf __aligned(16);
-	// struct krdma_buffer_info remote_buf __aligned(16);
-
 	struct completion cm_done;
 
 	struct list_head list;

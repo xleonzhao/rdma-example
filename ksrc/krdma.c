@@ -46,16 +46,16 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	struct scatterlist sg = {0};
 
 	// allocate space for local use
-	local_buf = kmalloc(RDMA_RDWR_BUF_LEN, GFP_KERNEL);
-	remote_buf = kmalloc(RDMA_RDWR_BUF_LEN, GFP_KERNEL);
+	local_buf = kmalloc(RDMA_SEND_BUF_LEN , GFP_KERNEL);
+	remote_buf = kmalloc(RDMA_RECV_BUF_LEN , GFP_KERNEL);
 	if (!local_buf || !remote_buf) {
 		krdma_err("buf alloc failed.\n");
 		goto exit;
 	}
 	local_info->buf = local_buf;
-	local_info->length = RDMA_RDWR_BUF_LEN;	
+	local_info->length = RDMA_SEND_BUF_LEN ;	
 	remote_info->buf = remote_buf;
-	remote_info->length = RDMA_RDWR_BUF_LEN;
+	remote_info->length = RDMA_RECV_BUF_LEN;
 
 	local_dma_addr = ib_dma_map_single(cb->cm_id->device,
 				   local_info->buf, local_info->length, DMA_BIDIRECTIONAL);
@@ -65,8 +65,6 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 		goto exit;
 	}
 	local_info->dma_addr = local_dma_addr;
-	// cb->local_buf.dma_addr = local_dma_addr;
-	// cb->local_buf.size = local_info->length;
 
 	remote_dma_addr = ib_dma_map_single(cb->cm_id->device,
 				   remote_info->buf, remote_info->length, DMA_BIDIRECTIONAL);
@@ -76,6 +74,11 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 		goto exit;
 	}
 	remote_info->dma_addr = remote_dma_addr;
+
+	krdma_debug("send buffer allocated ok, addr %p, size %ld\n", 
+					cb->local_info.buf, cb->local_info.length);
+	krdma_debug("recv buffer allocated ok, addr %p, size %ld\n", 
+					cb->remote_info.buf, cb->remote_info.length);
 
     // create memory region
 	page_list_len = (((remote_info->length - 1) & PAGE_MASK) + PAGE_SIZE)
@@ -91,6 +94,7 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	krdma_debug("mr registered: rkey 0x%x page_list_len %u\n",
 		mr->rkey, page_list_len);
 
+/*
 	sg_dma_address(&sg) = remote_info->dma_addr;
 	sg_dma_len(&sg) = remote_info->length;
 	ret = ib_map_mr_sg(cb->mr, &sg, 1, NULL, PAGE_SIZE);
@@ -103,7 +107,7 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 			(unsigned long)cb->mr->length,
 			(unsigned long long)cb->mr->iova);		
 	}
-	// cb->local_buf.rkey = mr->rkey;
+*/
 
 	ret = ib_query_port(cb->cm_id->device, cb->cm_id->port_num, &port_attr);
 	if (ret) {
@@ -113,6 +117,7 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	local_info->lid = port_attr.lid;
 	local_info->qp_num = cb->qp->qp_num;
 	
+	krdma_debug("krdma_setup_mr() is done\n");
 	return 0;
 
 exit:
@@ -167,6 +172,17 @@ int krdma_alloc_cb(struct krdma_cb **cbp, enum krdma_role role)
 	if (cbp)
 		*cbp = cb;
 	return 0;
+}
+
+static void show_rdma_buffer_info(struct krdma_buffer_info *info){
+	if(!info){
+		krdma_err("Passed info is NULL\n");
+		return;
+	}
+	krdma_debug("---------------------------------------------------------\n");
+	krdma_debug("buffer info, addr: %p , len: %u , rkey : 0x%u \n", 
+			(void*) info->dma_addr, info->size, info->rkey);
+	krdma_debug("---------------------------------------------------------\n");
 }
 
 static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
@@ -224,7 +240,7 @@ static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
 		case IB_WC_RECV:
 			krdma_debug("recv completion, %d bytes received\n", wc.byte_len);
 			krdma_debug("Server sent us its buffer location and credentials, showing \n");
-			// show_rdma_buffer_attr(&server_metadata_attr);
+			show_rdma_buffer_info((struct krdma_buffer_info *)&cb->remote_info.buf);
 			// cb->stats.recv_bytes += sizeof(cb->recv_buf);
 			// cb->stats.recv_msgs++;
 

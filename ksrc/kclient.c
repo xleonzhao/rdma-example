@@ -20,6 +20,8 @@
 #include "kcommon.h"
 #include "krdma.h"
 
+#define htonll(x) cpu_to_be64((x))
+
 static bool thread_running = false;
 
 #define IPADDR_LEN 16
@@ -144,7 +146,7 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 
 	server_recv_sge[0].addr = cb->remote_info.dma_addr;
 	server_recv_sge[0].length = cb->remote_info.length;
-	server_recv_sge[0].lkey = cb->pd->unsafe_global_rkey;
+	server_recv_sge[0].lkey = cb->pd->local_dma_lkey;
 	server_recv_wr.sg_list = server_recv_sge;
 	server_recv_wr.num_sge = 1;
 
@@ -165,14 +167,19 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(client_send_sge, 0, sizeof(struct ib_sge));
 	memset(&client_send_wr, 0, sizeof(client_send_wr));
 
-	struct krdma_buffer_info *info = (struct krdma_buffer_info *)&(cb->remote_info.buf);
-	info->dma_addr = cb->remote_info.dma_addr;
-	info->size = cb->remote_info.length;
-	info->rkey = cb->mr->rkey;
+	struct krdma_buffer_info *info = (struct krdma_buffer_info *)&(cb->local_info.buf);
+	info->dma_addr = htonll(cb->remote_info.dma_addr);
+	info->size = htonl(cb->remote_info.length);
+	info->rkey = htonl(cb->pd->unsafe_global_rkey);
 
-	client_send_sge[0].addr = cb->remote_info.dma_addr;
+	// unsigned char * p = (unsigned char *)cb->local_info.buf;
+	// for(int i = 0; i <sizeof(struct krdma_buffer_info); i++) {
+	// 	printk(KERN_INFO "%02x ", p[i]);
+	// }
+
+	client_send_sge[0].addr = cb->local_info.dma_addr;
 	client_send_sge[0].length = sizeof(struct krdma_buffer_info);
-	client_send_sge[0].lkey = cb->mr->lkey;
+	client_send_sge[0].lkey = cb->pd->local_dma_lkey;
 	client_send_wr.sg_list = client_send_sge;
 	client_send_wr.num_sge = 1;
 	client_send_wr.opcode = IB_WR_SEND;
@@ -193,6 +200,9 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	 * its buffer information */
 	wait_for_completion(&cb->cm_done);
 
+	if (cb->state == KRDMA_ERROR) 
+		return -1;
+	
 	return 0;
 }
 
