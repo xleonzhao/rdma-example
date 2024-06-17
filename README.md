@@ -1,6 +1,6 @@
 # What's New?
 
-Exercised a kernel module to be the client. Borrowed some code from [krdma](https://github.com/snake0/krdma).
+Exercised a kernel module to be the client. Borrowed some code from [krdma](https://github.com/snake0/krdma) and [krping](https://github.com/larrystevenwise/krping).
 
 # RDMA exmaple
 
