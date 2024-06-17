@@ -151,6 +151,32 @@ struct krdma_cb {
 	krdma_rw_info_t remote_info;
 	int page_list_len;
 
+	struct krdma_buffer_info send_buf __aligned(16); /* single send buf */
+	dma_addr_t send_dma_addr;
+	struct ib_send_wr sq_wr;	/* send work requrest record */
+	struct ib_sge send_sgl;
+
+	struct krdma_buffer_info recv_buf __aligned(16); /* single recv buf */
+	dma_addr_t recv_dma_addr;
+	struct ib_recv_wr rq_wr;	/* recv work request record */
+	struct ib_sge recv_sgl;		/* recv single SGE */
+
+	uint32_t size;
+
+	char *start_buf;		/* rdma read src */
+	u64  start_dma_addr;
+	DEFINE_DMA_UNMAP_ADDR(start_mapping);
+	struct ib_mr *start_mr;
+
+	char *rdma_buf;			/* used as rdma sink */
+	u64  rdma_dma_addr;
+	DEFINE_DMA_UNMAP_ADDR(rdma_mapping);
+	struct ib_mr *rdma_mr;
+
+	uint32_t remote_rkey;		/* remote guys RKEY */
+	uint64_t remote_addr;		/* remote guys TO */
+	uint32_t remote_len;		/* remote guys LEN */
+
 	struct completion cm_done;
 
 	struct list_head list;

@@ -45,6 +45,47 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	int ret;
 	struct scatterlist sg = {0};
 
+	cb->send_dma_addr = ib_dma_map_single(cb->pd->device,
+				   &cb->send_buf, sizeof(cb->send_buf), DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, cb->send_dma_addr)) {
+		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
+			&cb->send_buf, sizeof(cb->send_buf));
+		goto exit;
+	}
+
+	cb->recv_dma_addr = ib_dma_map_single(cb->pd->device,
+				   &cb->recv_buf, sizeof(cb->recv_buf), DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, cb->recv_dma_addr)) {
+		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
+			&cb->recv_buf, sizeof(cb->recv_buf));
+		goto exit;
+	}
+
+	cb->size = RDMA_RDWR_BUF_LEN;
+	cb->start_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->size,
+							&cb->start_dma_addr,
+							GFP_KERNEL);
+	if (!cb->start_buf) {
+		krdma_err("start_buf malloc failed\n");
+		ret = -ENOMEM;
+		goto exit;
+	}	
+
+	cb->rdma_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->size,
+							&cb->rdma_dma_addr,
+							GFP_KERNEL);
+	if (!cb->rdma_buf) {
+		krdma_err("rdma_buf malloc failed\n");
+		ret = -ENOMEM;
+		goto exit;
+	}
+
+	krdma_debug("send buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
+					cb->start_buf, cb->start_dma_addr, cb->size);
+	krdma_debug("recv buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
+					cb->rdma_buf, cb->rdma_dma_addr, cb->size);
+
+/*
 	// allocate space for local use
 	local_buf = kmalloc(RDMA_SEND_BUF_LEN , GFP_KERNEL);
 	remote_buf = kmalloc(RDMA_RECV_BUF_LEN , GFP_KERNEL);
@@ -79,7 +120,21 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 					cb->local_info.buf, cb->local_info.length);
 	krdma_debug("recv buffer allocated ok, addr %p, size %ld\n", 
 					cb->remote_info.buf, cb->remote_info.length);
+*/
 
+	mr = cb->pd->device->ops.get_dma_mr(cb->pd, IB_ACCESS_REMOTE_READ | 
+                                     IB_ACCESS_REMOTE_WRITE | 
+                                     IB_ACCESS_LOCAL_WRITE);
+	if (IS_ERR(mr)) {
+		ret = PTR_ERR(mr);
+		krdma_err("get_dma_mr failed %d\n", ret);
+		goto exit;
+	}
+	cb->mr = mr;
+	krdma_debug("mr registered: rkey 0x%x lkey 0x%x\n",
+		mr->rkey, mr->lkey);
+
+/*
     // create memory region
 	page_list_len = (((remote_info->length - 1) & PAGE_MASK) + PAGE_SIZE)
 				>> PAGE_SHIFT;
@@ -94,7 +149,6 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	krdma_debug("mr registered: rkey 0x%x page_list_len %u\n",
 		mr->rkey, page_list_len);
 
-/*
 	sg_dma_address(&sg) = remote_info->dma_addr;
 	sg_dma_len(&sg) = remote_info->length;
 	ret = ib_map_mr_sg(cb->mr, &sg, 1, NULL, PAGE_SIZE);
@@ -126,10 +180,10 @@ exit:
 }
 
 void krdma_free_mr(struct krdma_cb *cb) {
-	if (cb->mr) {
-		ib_dereg_mr(cb->mr);
-		cb->mr = NULL;
-	}
+	// if (cb->mr) {
+	// 	ib_dereg_mr(cb->mr);
+	// 	cb->mr = NULL;
+	// }
 
 	if (cb->local_info.dma_addr) {
 		ib_dma_unmap_single(cb->cm_id->device,
@@ -141,7 +195,7 @@ void krdma_free_mr(struct krdma_cb *cb) {
 				   cb->remote_info.dma_addr, cb->remote_info.length, DMA_BIDIRECTIONAL);
 		cb->remote_info.dma_addr = 0L;
 	}
-
+/*
 	if (cb->local_info.buf) {
 		kfree(cb->local_info.buf);
 		cb->local_info.buf = NULL;
@@ -149,6 +203,15 @@ void krdma_free_mr(struct krdma_cb *cb) {
 	if (cb->remote_info.buf) {
 		kfree(cb->remote_info.buf);
 		cb->remote_info.buf = NULL;
+	}
+*/
+	if (cb->start_buf) {
+		dma_free_coherent(cb->pd->device->dma_device, cb->size, cb->start_buf,
+					cb->start_dma_addr);
+	}
+	if (cb->rdma_buf) {
+		dma_free_coherent(cb->pd->device->dma_device, cb->size, cb->rdma_buf,
+					cb->rdma_dma_addr);
 	}
 }
 
@@ -240,7 +303,7 @@ static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
 		case IB_WC_RECV:
 			krdma_debug("recv completion, %d bytes received\n", wc.byte_len);
 			krdma_debug("Server sent us its buffer location and credentials, showing \n");
-			show_rdma_buffer_info((struct krdma_buffer_info *)&cb->remote_info.buf);
+			show_rdma_buffer_info(&cb->recv_buf);
 			// cb->stats.recv_bytes += sizeof(cb->recv_buf);
 			// cb->stats.recv_msgs++;
 

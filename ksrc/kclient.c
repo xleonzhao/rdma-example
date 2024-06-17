@@ -144,8 +144,10 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(server_recv_sge, 0, sizeof(struct ib_sge));
 	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
 
-	server_recv_sge[0].addr = cb->remote_info.dma_addr;
-	server_recv_sge[0].length = cb->remote_info.length;
+	// server_recv_sge[0].addr = cb->recv_dma_addr;
+	// server_recv_sge[0].length = sizeof(cb->recv_buf);
+	server_recv_sge[0].addr = cb->recv_dma_addr;
+	server_recv_sge[0].length = sizeof(struct krdma_buffer_info);
 	server_recv_sge[0].lkey = cb->pd->local_dma_lkey;
 	server_recv_wr.sg_list = server_recv_sge;
 	server_recv_wr.num_sge = 1;
@@ -167,17 +169,17 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(client_send_sge, 0, sizeof(struct ib_sge));
 	memset(&client_send_wr, 0, sizeof(client_send_wr));
 
-	struct krdma_buffer_info *info = (struct krdma_buffer_info *)&(cb->local_info.buf);
-	info->dma_addr = htonll(cb->remote_info.dma_addr);
-	info->size = htonl(cb->remote_info.length);
-	info->rkey = htonl(cb->pd->unsafe_global_rkey);
+	struct krdma_buffer_info *info = &cb->send_buf;
+	info->dma_addr = htonll(cb->rdma_dma_addr);
+	info->size = htonl(cb->size);
+	info->rkey = htonl(cb->mr->rkey);
 
 	// unsigned char * p = (unsigned char *)cb->local_info.buf;
 	// for(int i = 0; i <sizeof(struct krdma_buffer_info); i++) {
 	// 	printk(KERN_INFO "%02x ", p[i]);
 	// }
 
-	client_send_sge[0].addr = cb->local_info.dma_addr;
+	client_send_sge[0].addr = cb->send_dma_addr;
 	client_send_sge[0].length = sizeof(struct krdma_buffer_info);
 	client_send_sge[0].lkey = cb->pd->local_dma_lkey;
 	client_send_wr.sg_list = client_send_sge;
