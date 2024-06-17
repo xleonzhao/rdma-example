@@ -41,7 +41,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 	/*  Open a channel used to report asynchronous communication event */
 	cm_event_channel = rdma_create_event_channel();
 	if (!cm_event_channel) {
-		krdma_err("Creating cm event channel failed, errno: %d \n", -errno);
+		rdma_error("Creating cm event channel failed, errno: %d \n", -errno);
 		return -errno;
 	}
 	debug("RDMA CM event channel is created at : %p \n", cm_event_channel);
@@ -52,7 +52,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 			NULL,
 			RDMA_PS_TCP);
 	if (ret) {
-		krdma_err("Creating cm id failed with errno: %d \n", -errno); 
+		rdma_error("Creating cm id failed with errno: %d \n", -errno); 
 		return -errno;
 	}
 	/* Resolve destination and optional source addresses from IP addresses  to
@@ -60,7 +60,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 	 * to a local device. */
 	ret = rdma_resolve_addr(cm_client_id, NULL, (struct sockaddr*) s_addr, 2000);
 	if (ret) {
-		krdma_err("Failed to resolve address, errno: %d \n", -errno);
+		rdma_error("Failed to resolve address, errno: %d \n", -errno);
 		return -errno;
 	}
 	debug("waiting for cm event: RDMA_CM_EVENT_ADDR_RESOLVED\n");
@@ -68,13 +68,13 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 			RDMA_CM_EVENT_ADDR_RESOLVED,
 			&cm_event);
 	if (ret) {
-		krdma_err("Failed to receive a valid event, ret = %d \n", ret);
+		rdma_error("Failed to receive a valid event, ret = %d \n", ret);
 		return ret;
 	}
 	/* we ack the event */
 	ret = rdma_ack_cm_event(cm_event);
 	if (ret) {
-		krdma_err("Failed to acknowledge the CM event, errno: %d\n", -errno);
+		rdma_error("Failed to acknowledge the CM event, errno: %d\n", -errno);
 		return -errno;
 	}
 	debug("RDMA address is resolved \n");
@@ -83,7 +83,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 	  * establish a connection */
 	ret = rdma_resolve_route(cm_client_id, 2000);
 	if (ret) {
-		krdma_err("Failed to resolve route, erno: %d \n", -errno);
+		rdma_error("Failed to resolve route, erno: %d \n", -errno);
 	       return -errno;
 	}
 	debug("waiting for cm event: RDMA_CM_EVENT_ROUTE_RESOLVED\n");
@@ -91,13 +91,13 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 			RDMA_CM_EVENT_ROUTE_RESOLVED,
 			&cm_event);
 	if (ret) {
-		krdma_err("Failed to receive a valid event, ret = %d \n", ret);
+		rdma_error("Failed to receive a valid event, ret = %d \n", ret);
 		return ret;
 	}
 	/* we ack the event */
 	ret = rdma_ack_cm_event(cm_event);
 	if (ret) {
-		krdma_err("Failed to acknowledge the CM event, errno: %d \n", -errno);
+		rdma_error("Failed to acknowledge the CM event, errno: %d \n", -errno);
 		return -errno;
 	}
 	printf("Trying to connect to server at : %s port: %d \n", 
@@ -109,7 +109,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 	 */
 	pd = ibv_alloc_pd(cm_client_id->verbs);
 	if (!pd) {
-		krdma_err("Failed to alloc pd, errno: %d \n", -errno);
+		rdma_error("Failed to alloc pd, errno: %d \n", -errno);
 		return -errno;
 	}
 	debug("pd allocated at %p \n", pd);
@@ -121,7 +121,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 	 */
 	io_completion_channel = ibv_create_comp_channel(cm_client_id->verbs);
 	if (!io_completion_channel) {
-		krdma_err("Failed to create IO completion event channel, errno: %d\n",
+		rdma_error("Failed to create IO completion event channel, errno: %d\n",
 			       -errno);
 	return -errno;
 	}
@@ -138,13 +138,13 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 			io_completion_channel /* which IO completion channel */, 
 			0 /* signaling vector, not used here*/);
 	if (!client_cq) {
-		krdma_err("Failed to create CQ, errno: %d \n", -errno);
+		rdma_error("Failed to create CQ, errno: %d \n", -errno);
 		return -errno;
 	}
 	debug("CQ created at %p with %d elements \n", client_cq, client_cq->cqe);
 	ret = ibv_req_notify_cq(client_cq, 0);
 	if (ret) {
-		krdma_err("Failed to request notifications, errno: %d\n", -errno);
+		rdma_error("Failed to request notifications, errno: %d\n", -errno);
 		return -errno;
 	}
        /* Now the last step, set up the queue pair (send, recv) queues and their capacity.
@@ -164,7 +164,7 @@ static int client_prepare_connection(struct sockaddr_in *s_addr)
 		       pd /* which protection domain*/,
 		       &qp_init_attr /* Initial attributes */);
 	if (ret) {
-		krdma_err("Failed to create QP, errno: %d \n", -errno);
+		rdma_error("Failed to create QP, errno: %d \n", -errno);
 	       return -errno;
 	}
 	client_qp = cm_client_id->qp;
@@ -181,7 +181,7 @@ static int client_pre_post_recv_buffer()
 			sizeof(server_metadata_attr),
 			(IBV_ACCESS_LOCAL_WRITE));
 	if(!server_metadata_mr){
-		krdma_err("Failed to setup the server metadata mr , -ENOMEM\n");
+		rdma_error("Failed to setup the server metadata mr , -ENOMEM\n");
 		return -ENOMEM;
 	}
 	server_recv_sge.addr = (uint64_t) server_metadata_mr->addr;
@@ -195,7 +195,7 @@ static int client_pre_post_recv_buffer()
 		      &server_recv_wr /* receive work request*/,
 		      &bad_server_recv_wr /* error WRs */);
 	if (ret) {
-		krdma_err("Failed to pre-post the receive buffer, errno: %d \n", ret);
+		rdma_error("Failed to pre-post the receive buffer, errno: %d \n", ret);
 		return ret;
 	}
 	debug("Receive buffer pre-posting is successful \n");
@@ -214,7 +214,7 @@ static int client_connect_to_server()
 	conn_param.retry_count = 3; // if fail, then how many times to retry
 	ret = rdma_connect(cm_client_id, &conn_param);
 	if (ret) {
-		krdma_err("Failed to connect to remote host , errno: %d\n", -errno);
+		rdma_error("Failed to connect to remote host , errno: %d\n", -errno);
 		return -errno;
 	}
 	debug("waiting for cm event: RDMA_CM_EVENT_ESTABLISHED\n");
@@ -222,12 +222,12 @@ static int client_connect_to_server()
 			RDMA_CM_EVENT_ESTABLISHED,
 			&cm_event);
 	if (ret) {
-		krdma_err("Failed to get cm event, ret = %d \n", ret);
+		rdma_error("Failed to get cm event, ret = %d \n", ret);
 	       return ret;
 	}
 	ret = rdma_ack_cm_event(cm_event);
 	if (ret) {
-		krdma_err("Failed to acknowledge cm event, errno: %d\n", 
+		rdma_error("Failed to acknowledge cm event, errno: %d\n", 
 			       -errno);
 		return -errno;
 	}
@@ -251,7 +251,7 @@ static int client_xchange_metadata_with_server()
 			 IBV_ACCESS_REMOTE_READ|
 			 IBV_ACCESS_REMOTE_WRITE));
 	if(!client_src_mr){
-		krdma_err("Failed to register the first buffer, ret = %d \n", ret);
+		rdma_error("Failed to register the first buffer, ret = %d \n", ret);
 		return ret;
 	}
 	/* we prepare metadata for the first buffer */
@@ -264,7 +264,7 @@ static int client_xchange_metadata_with_server()
 			sizeof(client_metadata_attr),
 			IBV_ACCESS_LOCAL_WRITE);
 	if(!client_metadata_mr) {
-		krdma_err("Failed to register the client metadata buffer, ret = %d \n", ret);
+		rdma_error("Failed to register the client metadata buffer, ret = %d \n", ret);
 		return ret;
 	}
 	/* now we fill up SGE */
@@ -282,7 +282,7 @@ static int client_xchange_metadata_with_server()
 		       &client_send_wr,
 	       &bad_client_send_wr);
 	if (ret) {
-		krdma_err("Failed to send client metadata, errno: %d \n", 
+		rdma_error("Failed to send client metadata, errno: %d \n", 
 				-errno);
 		return -errno;
 	}
@@ -292,7 +292,7 @@ static int client_xchange_metadata_with_server()
 	ret = process_work_completion_events(io_completion_channel, 
 			wc, 2);
 	if(ret != 2) {
-		krdma_err("We failed to get 2 work completions , ret = %d \n",
+		rdma_error("We failed to get 2 work completions , ret = %d \n",
 				ret);
 		return ret;
 	}
@@ -317,7 +317,7 @@ static int client_remote_memory_ops()
 			 IBV_ACCESS_REMOTE_WRITE | 
 			 IBV_ACCESS_REMOTE_READ));
 	if (!client_dst_mr) {
-		krdma_err("We failed to create the destination buffer, -ENOMEM\n");
+		rdma_error("We failed to create the destination buffer, -ENOMEM\n");
 		return -ENOMEM;
 	}
 	/* Step 1: is to copy the local buffer into the remote buffer. We will 
@@ -340,7 +340,7 @@ static int client_remote_memory_ops()
 		       &client_send_wr,
 	       &bad_client_send_wr);
 	if (ret) {
-		krdma_err("Failed to write client src buffer, errno: %d \n", 
+		rdma_error("Failed to write client src buffer, errno: %d \n", 
 				-errno);
 		return -errno;
 	}
@@ -348,7 +348,7 @@ static int client_remote_memory_ops()
 	ret = process_work_completion_events(io_completion_channel, 
 			&wc, 1);
 	if(ret != 1) {
-		krdma_err("We failed to get 1 work completions , ret = %d \n",
+		rdma_error("We failed to get 1 work completions , ret = %d \n",
 				ret);
 		return ret;
 	}
@@ -371,7 +371,7 @@ static int client_remote_memory_ops()
 		       &client_send_wr,
 	       &bad_client_send_wr);
 	if (ret) {
-		krdma_err("Failed to read client dst buffer from the master, errno: %d \n", 
+		rdma_error("Failed to read client dst buffer from the master, errno: %d \n", 
 				-errno);
 		return -errno;
 	}
@@ -379,7 +379,7 @@ static int client_remote_memory_ops()
 	ret = process_work_completion_events(io_completion_channel, 
 			&wc, 1);
 	if(ret != 1) {
-		krdma_err("We failed to get 1 work completions , ret = %d \n",
+		rdma_error("We failed to get 1 work completions , ret = %d \n",
 				ret);
 		return ret;
 	}
@@ -397,20 +397,20 @@ static int client_disconnect_and_clean()
 	/* active disconnect from the client side */
 	ret = rdma_disconnect(cm_client_id);
 	if (ret) {
-		krdma_err("Failed to disconnect, errno: %d \n", -errno);
+		rdma_error("Failed to disconnect, errno: %d \n", -errno);
 		//continuing anyways
 	}
 	ret = process_rdma_cm_event(cm_event_channel, 
 			RDMA_CM_EVENT_DISCONNECTED,
 			&cm_event);
 	if (ret) {
-		krdma_err("Failed to get RDMA_CM_EVENT_DISCONNECTED event, ret = %d\n",
+		rdma_error("Failed to get RDMA_CM_EVENT_DISCONNECTED event, ret = %d\n",
 				ret);
 		//continuing anyways 
 	}
 	ret = rdma_ack_cm_event(cm_event);
 	if (ret) {
-		krdma_err("Failed to acknowledge cm event, errno: %d\n", 
+		rdma_error("Failed to acknowledge cm event, errno: %d\n", 
 			       -errno);
 		//continuing anyways
 	}
@@ -419,19 +419,19 @@ static int client_disconnect_and_clean()
 	/* Destroy client cm id */
 	ret = rdma_destroy_id(cm_client_id);
 	if (ret) {
-		krdma_err("Failed to destroy client id cleanly, %d \n", -errno);
+		rdma_error("Failed to destroy client id cleanly, %d \n", -errno);
 		// we continue anyways;
 	}
 	/* Destroy CQ */
 	ret = ibv_destroy_cq(client_cq);
 	if (ret) {
-		krdma_err("Failed to destroy completion queue cleanly, %d \n", -errno);
+		rdma_error("Failed to destroy completion queue cleanly, %d \n", -errno);
 		// we continue anyways;
 	}
 	/* Destroy completion channel */
 	ret = ibv_destroy_comp_channel(io_completion_channel);
 	if (ret) {
-		krdma_err("Failed to destroy completion channel cleanly, %d \n", -errno);
+		rdma_error("Failed to destroy completion channel cleanly, %d \n", -errno);
 		// we continue anyways;
 	}
 	/* Destroy memory buffers */
@@ -445,7 +445,7 @@ static int client_disconnect_and_clean()
 	/* Destroy protection domain */
 	ret = ibv_dealloc_pd(pd);
 	if (ret) {
-		krdma_err("Failed to destroy client protection domain cleanly, %d \n", -errno);
+		rdma_error("Failed to destroy client protection domain cleanly, %d \n", -errno);
 		// we continue anyways;
 	}
 	rdma_destroy_event_channel(cm_event_channel);
@@ -477,14 +477,14 @@ int main(int argc, char **argv) {
 						(unsigned int) strlen(optarg));
 				src = calloc(strlen(optarg) , 1);
 				if (!src) {
-					krdma_err("Failed to allocate memory : -ENOMEM\n");
+					rdma_error("Failed to allocate memory : -ENOMEM\n");
 					return -ENOMEM;
 				}
 				/* Copy the passes arguments */
 				strncpy(src, optarg, strlen(optarg));
 				dst = calloc(strlen(optarg), 1);
 				if (!dst) {
-					krdma_err("Failed to allocate destination memory, -ENOMEM\n");
+					rdma_error("Failed to allocate destination memory, -ENOMEM\n");
 					free(src);
 					return -ENOMEM;
 				}
@@ -493,7 +493,7 @@ int main(int argc, char **argv) {
 				/* remember, this overwrites the port info */
 				ret = get_addr(optarg, (struct sockaddr*) &server_sockaddr);
 				if (ret) {
-					krdma_err("Invalid IP \n");
+					rdma_error("Invalid IP \n");
 					return ret;
 				}
 				break;
@@ -516,37 +516,37 @@ int main(int argc, char **argv) {
        	}
 	ret = client_prepare_connection(&server_sockaddr);
 	if (ret) { 
-		krdma_err("Failed to setup client connection , ret = %d \n", ret);
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
 		return ret;
 	 }
 	ret = client_pre_post_recv_buffer(); 
 	if (ret) { 
-		krdma_err("Failed to setup client connection , ret = %d \n", ret);
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
 		return ret;
 	}
 	ret = client_connect_to_server();
 	if (ret) { 
-		krdma_err("Failed to setup client connection , ret = %d \n", ret);
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
 		return ret;
 	}
 	ret = client_xchange_metadata_with_server();
 	if (ret) {
-		krdma_err("Failed to setup client connection , ret = %d \n", ret);
+		rdma_error("Failed to setup client connection , ret = %d \n", ret);
 		return ret;
 	}
 	ret = client_remote_memory_ops();
 	if (ret) {
-		krdma_err("Failed to finish remote memory ops, ret = %d \n", ret);
+		rdma_error("Failed to finish remote memory ops, ret = %d \n", ret);
 		return ret;
 	}
 	if (check_src_dst()) {
-		krdma_err("src and dst buffers do not match \n");
+		rdma_error("src and dst buffers do not match \n");
 	} else {
 		printf("...\nSUCCESS, source and destination buffers match \n");
 	}
 	ret = client_disconnect_and_clean();
 	if (ret) {
-		krdma_err("Failed to cleanly disconnect and clean up resources \n");
+		rdma_error("Failed to cleanly disconnect and clean up resources \n");
 	}
 	return ret;
 }

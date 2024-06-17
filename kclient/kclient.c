@@ -86,12 +86,13 @@ static int client_connect_to_server(struct krdma_cb *cb)
 	ret = rdma_connect(cb->cm_id, &conn_param);
 	if (ret) {
 		rdma_error("rdma_connect error %d\n", ret);
-		return ret;
+		goto exit;
 	}
 
 	wait_for_completion(&cb->cm_done);
 	if (cb->state != KRDMA_CONNECTED) {
 		rdma_error("wait for KRDMA_CONNECTED state, but get %d\n", cb->state);
+		ret = -1;
 		goto exit;
 	}
 
@@ -166,14 +167,13 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(&client_send_wr, 0, sizeof(client_send_wr));
 
 	struct krdma_buffer_info *info = &cb->send_buf;
-	info->dma_addr = htonll(cb->rdma_dma_addr);
-	info->size = htonl(cb->size);
-	info->rkey = htonl(cb->mr->rkey);
-
-	// unsigned char * p = (unsigned char *)cb->local_info.buf;
-	// for(int i = 0; i <sizeof(struct krdma_buffer_info); i++) {
-	// 	printk(KERN_INFO "%02x ", p[i]);
-	// }
+	// info->dma_addr = htonll(cb->rdma_dma_addr);
+	// info->size = htonl(cb->rdma_buf_size);
+	// info->rkey = htonl(cb->mr->rkey);
+	info->dma_addr = cb->rdma_dma_addr;
+	// requested buffer size on server
+	info->size = cb->rdma_buf_size;
+	info->rkey = cb->mr->rkey;
 
 	client_send_sge[0].addr = cb->send_dma_addr;
 	client_send_sge[0].length = sizeof(struct krdma_buffer_info);
@@ -209,94 +209,94 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
  * 1) RDMA write from src -> remote buffer 
  * 2) RDMA read from remote bufer -> dst
  */ 
-static int client_remote_memory_ops(void) 
+static int client_remote_memory_ops(struct krdma_cb *cb) 
 {
-#ifdef _OLD_CODE
-	struct ibv_wc wc;
 	int ret = -1;
-	client_dst_mr = rdma_buffer_register(pd,
-			dst,
-			strlen(src),
-			(IBV_ACCESS_LOCAL_WRITE | 
-			 IBV_ACCESS_REMOTE_WRITE | 
-			 IBV_ACCESS_REMOTE_READ));
-	if (!client_dst_mr) {
-		rdma_error("We failed to create the destination buffer, -ENOMEM\n");
-		return -ENOMEM;
-	}
+	struct ib_sge client_rdma_sge[1];
+	struct ib_rdma_wr client_rdma_wr;
+	const struct ib_send_wr *bad_send_wr = NULL;
+
+	// copy data to start_buf
+	memcpy((void *)cb->start_buf, (const void *)test_string, 
+			sizeof(test_string));
+
+	memset(client_rdma_sge, 0, sizeof(struct ib_sge));
+	memset(&client_rdma_wr, 0, sizeof(client_rdma_wr));
+
 	/* Step 1: is to copy the local buffer into the remote buffer. We will 
 	 * reuse the previous variables. */
 	/* now we fill up SGE */
-	client_send_sge.addr = (uint64_t) client_src_mr->addr;
-	client_send_sge.length = (uint32_t) client_src_mr->length;
-	client_send_sge.lkey = client_src_mr->lkey;
-	/* now we link to the send work request */
-	bzero(&client_send_wr, sizeof(client_send_wr));
-	client_send_wr.sg_list = &client_send_sge;
-	client_send_wr.num_sge = 1;
-	client_send_wr.opcode = IBV_WR_RDMA_WRITE;
-	client_send_wr.send_flags = IBV_SEND_SIGNALED;
+	client_rdma_sge[0].addr = (uint64_t) cb->start_dma_addr;
+	client_rdma_sge[0].length = (uint32_t) sizeof(test_string);
+	client_rdma_sge[0].lkey = cb->pd->local_dma_lkey;
+	/* now we link to the rdma work request */
+	client_rdma_wr.wr.sg_list = client_rdma_sge;
+	client_rdma_wr.wr.num_sge = 1;
+	client_rdma_wr.wr.opcode = IB_WR_RDMA_WRITE;
+	client_rdma_wr.wr.send_flags = IB_SEND_SIGNALED;
 	/* we have to tell server side info for RDMA */
-	client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
-	client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
+	client_rdma_wr.rkey = cb->recv_buf.rkey;
+	client_rdma_wr.remote_addr = cb->recv_buf.dma_addr;
 	/* Now we post it */
-	ret = ibv_post_send(client_qp, 
-		       &client_send_wr,
-	       &bad_client_send_wr);
+	ret = ib_post_send(cb->qp, &client_rdma_wr.wr, &bad_send_wr);
 	if (ret) {
-		rdma_error("Failed to write client src buffer, errno: %d \n", 
-				-errno);
-		return -errno;
-	}
-	/* at this point we are expecting 1 work completion for the write */
-	ret = process_work_completion_events(io_completion_channel, 
-			&wc, 1);
-	if(ret != 1) {
-		rdma_error("We failed to get 1 work completions , ret = %d \n",
+		rdma_error("Failed to write client src buffer, ret %d \n", 
 				ret);
 		return ret;
 	}
+	/* at this point we are expecting 1 work completion for the write */
+	wait_for_completion(&cb->cm_done);
+
+	if (cb->state == KRDMA_ERROR) 
+		return -1;
+
 	debug("Client side WRITE is complete \n");
+
 	/* Now we prepare a READ using same variables but for destination */
-	client_send_sge.addr = (uint64_t) client_dst_mr->addr;
-	client_send_sge.length = (uint32_t) client_dst_mr->length;
-	client_send_sge.lkey = client_dst_mr->lkey;
-	/* now we link to the send work request */
-	bzero(&client_send_wr, sizeof(client_send_wr));
-	client_send_wr.sg_list = &client_send_sge;
-	client_send_wr.num_sge = 1;
-	client_send_wr.opcode = IBV_WR_RDMA_READ;
-	client_send_wr.send_flags = IBV_SEND_SIGNALED;
+	client_rdma_sge[0].addr = (uint64_t) cb->rdma_dma_addr;
+	client_rdma_sge[0].length = (uint32_t) cb->rdma_buf_size;
+	client_rdma_sge[0].lkey = cb->pd->local_dma_lkey;
+	/* now we link to the rdma work request */
+	client_rdma_wr.wr.sg_list = client_rdma_sge;
+	client_rdma_wr.wr.num_sge = 1;
+	client_rdma_wr.wr.opcode = IB_WR_RDMA_READ;
+	client_rdma_wr.wr.send_flags = IB_SEND_SIGNALED;
 	/* we have to tell server side info for RDMA */
-	client_send_wr.wr.rdma.rkey = server_metadata_attr.stag.remote_stag;
-	client_send_wr.wr.rdma.remote_addr = server_metadata_attr.address;
+	client_rdma_wr.remote_addr = cb->recv_buf.dma_addr;
+	client_rdma_wr.rkey = cb->recv_buf.rkey;
 	/* Now we post it */
-	ret = ibv_post_send(client_qp, 
-		       &client_send_wr,
-	       &bad_client_send_wr);
+	ret = ib_post_send(cb->qp, 
+		       &client_rdma_wr.wr, &bad_send_wr);
 	if (ret) {
-		rdma_error("Failed to read client dst buffer from the master, errno: %d \n", 
-				-errno);
-		return -errno;
-	}
-	/* at this point we are expecting 1 work completion for the write */
-	ret = process_work_completion_events(io_completion_channel, 
-			&wc, 1);
-	if(ret != 1) {
-		rdma_error("We failed to get 1 work completions , ret = %d \n",
+		rdma_error("Failed to read client dst buffer from the master, ret %d\n", 
 				ret);
 		return ret;
 	}
+	/* at this point we are expecting 1 work completion for the write */
+	wait_for_completion(&cb->cm_done);
+
+	if (cb->state == KRDMA_ERROR) 
+		return -1;
+
 	debug("Client side READ is complete \n");
-#endif // _OLD_CODE
+
+	memcpy(dst, cb->rdma_buf, sizeof(test_string));
 	return 0;
 }
 
 /* This function disconnects the RDMA connection from the server and cleans up 
  * all the resources.
  */
-static int client_disconnect_and_clean(void)
+static void client_disconnect_and_clean(struct krdma_cb *cb)
 {
+	// free up pd, cq, qp, and mr
+	if (cb)
+		krdma_free_cb(cb);
+	if (src)
+		kfree(src);
+	if (dst)
+		kfree(dst);
+
 #ifdef _OLD_CODE
 	struct rdma_cm_event *cm_event = NULL;
 	int ret = -1;
@@ -356,20 +356,20 @@ static int client_disconnect_and_clean(void)
 	}
 	rdma_destroy_event_channel(cm_event_channel);
 	printf("Client resource clean up is complete \n");
-#endif // _OLD_CODE
 	return 0;
+#endif // _OLD_CODE0
 }
 
 static int client_main(void * data) {
 	int ret = -1;
 	src = dst = NULL; 
-	struct krdma_cb *cb;
+	struct krdma_cb *cb = NULL;
+
+	thread_running = true;
 
 	if (client_init() != 0) {
 		goto exit;
 	}
-
-	thread_running = true;
 
 	ret = krdma_alloc_cb(&cb, KRDMA_CLIENT_CONN);
 	if (ret) {
@@ -395,7 +395,7 @@ static int client_main(void * data) {
 		goto exit;
 	}
 
-	ret = client_remote_memory_ops();
+	ret = client_remote_memory_ops(cb);
 	if (ret) {
 		rdma_error("Failed to finish remote memory ops, ret = %d \n", ret);
 		goto exit;
@@ -407,33 +407,18 @@ static int client_main(void * data) {
 		debug("...\nSUCCESS, source and destination buffers match \n");
 	}
 
-	ret = client_disconnect_and_clean();
-	if (ret) {
-		rdma_error("Failed to cleanly disconnect and clean up resources \n");
-	}
-	return ret;
-
-	// free up pd, cq, qp, and mr
-	krdma_free_cb(cb);
-	debug("quit");
-	return 0;
+	ret = 0;
 
 exit:
-	if (cb)
-		krdma_free_cb(cb);
-
-	debug("error occurred, abort");
-	thread_running = false;
-	return -EINVAL;
-
-#ifdef TEMP_DISABLED
-	ret = client_disconnect_and_clean();
+	client_disconnect_and_clean(cb);
 	if (ret) {
-		rdma_error("Failed to cleanly disconnect and clean up resources \n");
+		debug("error occurred, abort");
+	} else {
+		debug("quit normally");
 	}
+
+	thread_running = false;
 	return ret;
-#endif
-	return 0;
 }
 
 /////////////////////////////////////////////////////////////

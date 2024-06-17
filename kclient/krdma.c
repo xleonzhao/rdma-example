@@ -46,8 +46,8 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 		goto exit;
 	}
 
-	cb->size = RDMA_RDWR_BUF_LEN;
-	cb->start_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->size,
+	cb->start_buf_size = RDMA_RDWR_BUF_LEN;
+	cb->start_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->start_buf_size,
 							&cb->start_dma_addr,
 							GFP_KERNEL);
 	if (!cb->start_buf) {
@@ -56,7 +56,8 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 		goto exit;
 	}	
 
-	cb->rdma_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->size,
+	cb->rdma_buf_size = RDMA_RDWR_BUF_LEN;
+	cb->rdma_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->rdma_buf_size,
 							&cb->rdma_dma_addr,
 							GFP_KERNEL);
 	if (!cb->rdma_buf) {
@@ -66,9 +67,9 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	}
 
 	debug("send buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
-					cb->start_buf, cb->start_dma_addr, cb->size);
+					cb->start_buf, cb->start_dma_addr, cb->start_buf_size);
 	debug("recv buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
-					cb->rdma_buf, cb->rdma_dma_addr, cb->size);
+					cb->rdma_buf, cb->rdma_dma_addr, cb->rdma_buf_size);
 
 /*
 	// allocate space for local use
@@ -191,11 +192,11 @@ void krdma_free_mr(struct krdma_cb *cb) {
 	}
 */
 	if (cb->start_buf) {
-		dma_free_coherent(cb->pd->device->dma_device, cb->size, cb->start_buf,
+		dma_free_coherent(cb->pd->device->dma_device, cb->start_buf_size, cb->start_buf,
 					cb->start_dma_addr);
 	}
 	if (cb->rdma_buf) {
-		dma_free_coherent(cb->pd->device->dma_device, cb->size, cb->rdma_buf,
+		dma_free_coherent(cb->pd->device->dma_device, cb->rdma_buf_size, cb->rdma_buf,
 					cb->rdma_dma_addr);
 	}
 }
@@ -292,6 +293,7 @@ static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
 			// cb->stats.recv_bytes += sizeof(cb->recv_buf);
 			// cb->stats.recv_msgs++;
 
+			// wait for further message by server
 			// ret = ib_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
 			// if (ret) {
 			// 	printk(KERN_ERR PFX "post recv error: %d\n", 
@@ -402,8 +404,8 @@ exit:
 
 int krdma_free_cb(struct krdma_cb *cb)
 {
-	struct krdma_cb *entry = NULL;
-	struct krdma_cb *this = NULL;
+	// struct krdma_cb *entry = NULL;
+	// struct krdma_cb *this = NULL;
 
 	if (cb == NULL)
 		return -EINVAL;
@@ -427,16 +429,16 @@ int krdma_free_cb(struct krdma_cb *cb)
 	rdma_destroy_id(cb->cm_id);
 	cb->cm_id = NULL;
 
-	if (cb->role == KRDMA_LISTEN_CONN) {
-		list_for_each_entry_safe(entry, this, &cb->ready_conn, list) {
-			krdma_free_cb(entry);
-			list_del(&entry->list);
-		}
-		list_for_each_entry_safe(entry, this, &cb->active_conn, list) {
-			krdma_free_cb(entry);
-			list_del(&entry->list);
-		}
-	}
+	// if (cb->role == KRDMA_LISTEN_CONN) {
+	// 	list_for_each_entry_safe(entry, this, &cb->ready_conn, list) {
+	// 		krdma_free_cb(entry);
+	// 		list_del(&entry->list);
+	// 	}
+	// 	list_for_each_entry_safe(entry, this, &cb->active_conn, list) {
+	// 		krdma_free_cb(entry);
+	// 		list_del(&entry->list);
+	// 	}
+	// }
 
 	kfree(cb);
 	return 0;

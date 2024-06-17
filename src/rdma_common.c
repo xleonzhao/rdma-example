@@ -10,7 +10,7 @@
 void show_rdma_cmid(struct rdma_cm_id *id)
 {
 	if(!id){
-		krdma_err("Passed ptr is NULL\n");
+		rdma_error("Passed ptr is NULL\n");
 		return;
 	}
 	printf("RDMA cm id at %p \n", id);
@@ -26,7 +26,7 @@ void show_rdma_cmid(struct rdma_cm_id *id)
 
 void show_rdma_buffer_attr(struct rdma_buffer_attr *attr){
 	if(!attr){
-		krdma_err("Passed attr is NULL\n");
+		rdma_error("Passed attr is NULL\n");
 		return;
 	}
 	printf("---------------------------------------------------------\n");
@@ -42,12 +42,12 @@ struct ibv_mr* rdma_buffer_alloc(struct ibv_pd *pd, uint32_t size,
 {
 	struct ibv_mr *mr = NULL;
 	if (!pd) {
-		krdma_err("Protection domain is NULL \n");
+		rdma_error("Protection domain is NULL \n");
 		return NULL;
 	}
 	void *buf = calloc(1, size);
 	if (!buf) {
-		krdma_err("failed to allocate buffer, -ENOMEM\n");
+		rdma_error("failed to allocate buffer, -ENOMEM\n");
 		return NULL;
 	}
 	debug("Buffer allocated: %p , len: %u \n", buf, size);
@@ -64,12 +64,12 @@ struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd,
 {
 	struct ibv_mr *mr = NULL;
 	if (!pd) {
-		krdma_err("Protection domain is NULL, ignoring \n");
+		rdma_error("Protection domain is NULL, ignoring \n");
 		return NULL;
 	}
 	mr = ibv_reg_mr(pd, addr, length, permission);
 	if (!mr) {
-		krdma_err("Failed to create mr on buffer, errno: %d \n", -errno);
+		rdma_error("Failed to create mr on buffer, errno: %d \n", -errno);
 		return NULL;
 	}
 	debug("Registered: %p , len: %u , stag: 0x%x \n", 
@@ -82,7 +82,7 @@ struct ibv_mr *rdma_buffer_register(struct ibv_pd *pd,
 void rdma_buffer_free(struct ibv_mr *mr) 
 {
 	if (!mr) {
-		krdma_err("Passed memory region is NULL, ignoring\n");
+		rdma_error("Passed memory region is NULL, ignoring\n");
 		return ;
 	}
 	void *to_free = mr->addr;
@@ -94,7 +94,7 @@ void rdma_buffer_free(struct ibv_mr *mr)
 void rdma_buffer_deregister(struct ibv_mr *mr) 
 {
 	if (!mr) { 
-		krdma_err("Passed memory region is NULL, ignoring\n");
+		rdma_error("Passed memory region is NULL, ignoring\n");
 		return;
 	}
 	debug("Deregistered: %p , len: %u , stag : 0x%x \n", 
@@ -111,13 +111,13 @@ int process_rdma_cm_event(struct rdma_event_channel *echannel,
 	int ret = 1;
 	ret = rdma_get_cm_event(echannel, cm_event);
 	if (ret) {
-		krdma_err("Failed to retrieve a cm event, errno: %d \n",
+		rdma_error("Failed to retrieve a cm event, errno: %d \n",
 				-errno);
 		return -errno;
 	}
 	/* lets see, if it was a good event */
 	if(0 != (*cm_event)->status){
-		krdma_err("CM event has non zero status: %d\n", (*cm_event)->status);
+		rdma_error("CM event has non zero status: %d\n", (*cm_event)->status);
 		ret = -((*cm_event)->status);
 		/* important, we acknowledge the event */
 		rdma_ack_cm_event(*cm_event);
@@ -125,7 +125,7 @@ int process_rdma_cm_event(struct rdma_event_channel *echannel,
 	}
 	/* if it was a good event, was it of the expected type */
 	if ((*cm_event)->event != expected_event) {
-		krdma_err("Unexpected event received: %s [ expecting: %s ]", 
+		rdma_error("Unexpected event received: %s [ expecting: %s ]", 
 				rdma_event_str((*cm_event)->event),
 				rdma_event_str(expected_event));
 		/* important, we acknowledge the event */
@@ -149,13 +149,13 @@ int process_work_completion_events (struct ibv_comp_channel *comp_channel,
 		       &cq_ptr, /* which CQ has an activity. This should be the same as CQ we created before */ 
 		       &context); /* Associated CQ user context, which we did set */
        if (ret) {
-	       krdma_err("Failed to get next CQ event due to %d \n", -errno);
+	       rdma_error("Failed to get next CQ event due to %d \n", -errno);
 	       return -errno;
        }
        /* Request for more notifications. */
        ret = ibv_req_notify_cq(cq_ptr, 0);
        if (ret){
-	       krdma_err("Failed to request further notifications %d \n", -errno);
+	       rdma_error("Failed to request further notifications %d \n", -errno);
 	       return -errno;
        }
        /* We got notification. We reap the work completion (WC) element. It is 
@@ -169,7 +169,7 @@ int process_work_completion_events (struct ibv_comp_channel *comp_channel,
 		       max_wc - total_wc /* number of remaining WC elements*/,
 		       wc + total_wc/* where to store */);
 	       if (ret < 0) {
-		       krdma_err("Failed to poll cq for wc due to %d \n", ret);
+		       rdma_error("Failed to poll cq for wc due to %d \n", ret);
 		       /* ret is errno here */
 		       return ret;
 	       }
@@ -179,7 +179,7 @@ int process_work_completion_events (struct ibv_comp_channel *comp_channel,
        /* Now we check validity and status of I/O work completions */
        for( i = 0 ; i < total_wc ; i++) {
 	       if (wc[i].status != IBV_WC_SUCCESS) {
-		       krdma_err("Work completion (WC) has error status: %s at index %d", 
+		       rdma_error("Work completion (WC) has error status: %s at index %d", 
 				       ibv_wc_status_str(wc[i].status), i);
 		       /* return negative value */
 		       return -(wc[i].status);
@@ -200,7 +200,7 @@ int get_addr(char *dst, struct sockaddr *addr)
 	int ret = -1;
 	ret = getaddrinfo(dst, NULL, NULL, &res);
 	if (ret) {
-		krdma_err("getaddrinfo failed - invalid hostname or IP address\n");
+		rdma_error("getaddrinfo failed - invalid hostname or IP address\n");
 		return ret;
 	}
 	memcpy(addr, res->ai_addr, sizeof(struct sockaddr_in));

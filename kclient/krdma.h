@@ -145,15 +145,15 @@ struct krdma_cb {
 	struct ib_recv_wr rq_wr;	/* recv work request record */
 	struct ib_sge recv_sgl;		/* recv single SGE */
 
-	uint32_t size;
-
 	char *start_buf;		/* rdma read src */
 	u64  start_dma_addr;
+	uint32_t start_buf_size;
 	DEFINE_DMA_UNMAP_ADDR(start_mapping);
 	struct ib_mr *start_mr;
 
 	char *rdma_buf;			/* used as rdma sink */
 	u64  rdma_dma_addr;
+	uint32_t rdma_buf_size;
 	DEFINE_DMA_UNMAP_ADDR(rdma_mapping);
 	struct ib_mr *rdma_mr;
 
