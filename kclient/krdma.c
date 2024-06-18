@@ -12,6 +12,8 @@
 #include <linux/dma-direct.h>
 #include <linux/pci.h>
 #include <linux/list.h>
+#include <linux/string.h>
+#include <linux/types.h>
 
 #include "krdma.h"
 
@@ -26,7 +28,7 @@ int krdma_set_addr(struct sockaddr_in *addr, const char *host, const int port) {
 	return 0;
 }
 
-static void show_rdma_buffer_info(struct krdma_buffer_info *info){
+static void show_rdma_buffer_info(struct krdma_server_info *info){
 	if(!info){
 		rdma_error("Passed info is NULL\n");
 		return;
@@ -35,6 +37,22 @@ static void show_rdma_buffer_info(struct krdma_buffer_info *info){
 	debug("buffer info, addr: %p , len: %u , rkey : 0x%u \n", 
 			(void*) info->dma_addr, info->size, info->rkey);
 	debug("---------------------------------------------------------\n");
+}
+
+uint64_t string_to_uint64(const char *str)
+{
+    uint64_t value = 0;
+    size_t len = strlen(str);
+    size_t i;
+
+    // Ensure we do not read beyond 8 characters
+    len = len > 8 ? 8 : len;
+
+    for (i = 0; i < len; i++) {
+        value |= (uint64_t)(unsigned char)str[i] << (8 * (7 - i));
+    }
+
+    return value;
 }
 
 static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
@@ -411,7 +429,7 @@ int krdma_resolve_remote(struct krdma_cb *cb, const char *host, const int port) 
 	}
 	wait_for_completion(&cb->cm_done);
 	if (cb->state != KRDMA_ADDR_RESOLVED) {
-		ret = -STATE_ERROR;
+		ret = -1;
 		rdma_error("rdma_resolve_route state error, ret %d\n", ret);
 		goto exit;
 	}
@@ -426,7 +444,7 @@ int krdma_resolve_remote(struct krdma_cb *cb, const char *host, const int port) 
 	}
 	wait_for_completion(&cb->cm_done);
 	if (cb->state != KRDMA_ROUTE_RESOLVED) {
-		ret = -STATE_ERROR;
+		ret = -1;
 		rdma_error("rdma_resolve_route state error, ret %d\n", ret);
 		goto exit;
 	}

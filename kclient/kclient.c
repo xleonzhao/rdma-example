@@ -20,6 +20,8 @@
 
 static bool thread_running = false;
 static struct krdma_cb *cb = NULL;
+#define this_client_token1 "ABCDEFGH"
+#define this_client_token2 "4321"
 
 #define IPADDR_LEN 16
 static char server[IPADDR_LEN]={0}; // server ip address
@@ -111,22 +113,17 @@ exit:
 static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 {
 	int ret = -1;
-	// struct ibv_wc wc[2];
-	// struct scatterlist sg[2];
 
 	struct ib_sge server_recv_sge[1];
 	struct ib_recv_wr server_recv_wr;
 	const struct ib_recv_wr *bad_recv_wr = NULL;
-	// dma_addr_t dma_addr;
 
 	// get ready for receiving server info
 	memset(server_recv_sge, 0, sizeof(struct ib_sge));
 	memset(&server_recv_wr, 0, sizeof(server_recv_wr));
 
-	// server_recv_sge[0].addr = cb->recv_dma_addr;
-	// server_recv_sge[0].length = sizeof(cb->recv_buf);
 	server_recv_sge[0].addr = cb->recv_dma_addr;
-	server_recv_sge[0].length = sizeof(struct krdma_buffer_info);
+	server_recv_sge[0].length = sizeof(struct krdma_server_info);
 	server_recv_sge[0].lkey = cb->pd->local_dma_lkey;
 	server_recv_wr.sg_list = server_recv_sge;
 	server_recv_wr.num_sge = 1;
@@ -148,15 +145,14 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(client_send_sge, 0, sizeof(struct ib_sge));
 	memset(&client_send_wr, 0, sizeof(client_send_wr));
 
-	struct krdma_buffer_info *info = &cb->send_buf;
-	info->dma_addr = cb->rdma_rbuf_dma_addr;
+	struct krdma_client_info *info = &cb->send_buf;
+	info->token1 = string_to_uint64(this_client_token1);
+	info->token2 = (uint32_t)(string_to_uint64(this_client_token2) >> 32);
 	// request server to allocate a buffer with info->size
-	info->size = cb->rdma_buf_size;
-	// info->rkey = cb->mr->rkey;
-	info->rkey = cb->pd->unsafe_global_rkey;
+	info->size = RDMA_RDWR_BUF_LEN;
 
 	client_send_sge[0].addr = cb->send_dma_addr;
-	client_send_sge[0].length = sizeof(struct krdma_buffer_info);
+	client_send_sge[0].length = sizeof(struct krdma_client_info);
 	client_send_sge[0].lkey = cb->pd->local_dma_lkey;
 	client_send_wr.sg_list = client_send_sge;
 	client_send_wr.num_sge = 1;
