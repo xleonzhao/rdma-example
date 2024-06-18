@@ -19,6 +19,7 @@
 #include "krdma.h"
 
 static bool thread_running = false;
+static struct krdma_cb *cb = NULL;
 
 #define IPADDR_LEN 16
 static char server[IPADDR_LEN]={0}; // server ip address
@@ -27,15 +28,14 @@ module_param_string(server, server, IPADDR_LEN, S_IRUGO);
 static int port = 20886; // server port number
 module_param(port, int, S_IRUGO);
 
-// static struct sockaddr_in server_sockaddr = {0};
 /* Source and Destination buffers, where RDMA operations source and sink */
-static char *src = NULL, *dst = NULL; 
+// static char *src = NULL, *dst = NULL; 
 const char test_string[] = "hello, world";
 
 /* This is our testing function */
-static int check_src_dst(void) 
+static int check_src_dst(void *src, void *dst) 
 {
-	return memcmp((void*) src, (void*) dst, strlen(src));
+	return memcmp(src, dst, strlen(src));
 }
 
 /* This function prepares client side connection resources for an RDMA connection */
@@ -103,24 +103,6 @@ exit:
 	return ret;
 }
 
-static int client_init(void) {
-	src = kzalloc(strlen(test_string), GFP_KERNEL);
-	if (!src) {
-		rdma_error("Failed to allocate memory : -ENOMEM\n");
-		return -ENOMEM;
-	}
-	/* Copy the passes arguments */
-	strncpy(src, test_string, strlen(test_string));
-	dst = kzalloc(strlen(test_string), GFP_KERNEL);
-	if (!dst) {
-		rdma_error("Failed to allocate destination memory, -ENOMEM\n");
-		kfree(src);
-		return -ENOMEM;
-	}
-
-	return 0;
-}
-
 /* Exchange buffer metadata with the server. The client sends its, and then receives
  * from the server. The client-side metadata on the server is _not_ used because
  * this program is client driven. But it shown here how to do it for the illustration
@@ -167,13 +149,11 @@ static int client_xchange_metadata_with_server(struct krdma_cb *cb)
 	memset(&client_send_wr, 0, sizeof(client_send_wr));
 
 	struct krdma_buffer_info *info = &cb->send_buf;
-	// info->dma_addr = htonll(cb->rdma_dma_addr);
-	// info->size = htonl(cb->rdma_buf_size);
-	// info->rkey = htonl(cb->mr->rkey);
-	info->dma_addr = cb->rdma_dma_addr;
-	// requested buffer size on server
+	info->dma_addr = cb->rdma_rbuf_dma_addr;
+	// request server to allocate a buffer with info->size
 	info->size = cb->rdma_buf_size;
-	info->rkey = cb->mr->rkey;
+	// info->rkey = cb->mr->rkey;
+	info->rkey = cb->pd->unsafe_global_rkey;
 
 	client_send_sge[0].addr = cb->send_dma_addr;
 	client_send_sge[0].length = sizeof(struct krdma_buffer_info);
@@ -217,7 +197,7 @@ static int client_remote_memory_ops(struct krdma_cb *cb)
 	const struct ib_send_wr *bad_send_wr = NULL;
 
 	// copy data to start_buf
-	memcpy((void *)cb->start_buf, (const void *)test_string, 
+	memcpy((void *)cb->rdma_write_buf, (const void *)test_string, 
 			sizeof(test_string));
 
 	memset(client_rdma_sge, 0, sizeof(struct ib_sge));
@@ -226,7 +206,7 @@ static int client_remote_memory_ops(struct krdma_cb *cb)
 	/* Step 1: is to copy the local buffer into the remote buffer. We will 
 	 * reuse the previous variables. */
 	/* now we fill up SGE */
-	client_rdma_sge[0].addr = (uint64_t) cb->start_dma_addr;
+	client_rdma_sge[0].addr = (uint64_t) cb->rdma_wbuf_dma_addr;
 	client_rdma_sge[0].length = (uint32_t) sizeof(test_string);
 	client_rdma_sge[0].lkey = cb->pd->local_dma_lkey;
 	/* now we link to the rdma work request */
@@ -253,7 +233,7 @@ static int client_remote_memory_ops(struct krdma_cb *cb)
 	debug("Client side WRITE is complete \n");
 
 	/* Now we prepare a READ using same variables but for destination */
-	client_rdma_sge[0].addr = (uint64_t) cb->rdma_dma_addr;
+	client_rdma_sge[0].addr = (uint64_t) cb->rdma_rbuf_dma_addr;
 	client_rdma_sge[0].length = (uint32_t) cb->rdma_buf_size;
 	client_rdma_sge[0].lkey = cb->pd->local_dma_lkey;
 	/* now we link to the rdma work request */
@@ -280,7 +260,7 @@ static int client_remote_memory_ops(struct krdma_cb *cb)
 
 	debug("Client side READ is complete \n");
 
-	memcpy(dst, cb->rdma_buf, sizeof(test_string));
+	// memcpy(dst, cb->rdma_read_buf, sizeof(test_string));
 	return 0;
 }
 
@@ -292,88 +272,16 @@ static void client_disconnect_and_clean(struct krdma_cb *cb)
 	// free up pd, cq, qp, and mr
 	if (cb)
 		krdma_free_cb(cb);
-	if (src)
-		kfree(src);
-	if (dst)
-		kfree(dst);
-
-#ifdef _OLD_CODE
-	struct rdma_cm_event *cm_event = NULL;
-	int ret = -1;
-	/* active disconnect from the client side */
-	ret = rdma_disconnect(cm_client_id);
-	if (ret) {
-		rdma_error("Failed to disconnect, errno: %d \n", -errno);
-		//continuing anyways
-	}
-	ret = process_rdma_cm_event(cm_event_channel, 
-			RDMA_CM_EVENT_DISCONNECTED,
-			&cm_event);
-	if (ret) {
-		rdma_error("Failed to get RDMA_CM_EVENT_DISCONNECTED event, ret = %d\n",
-				ret);
-		//continuing anyways 
-	}
-	ret = rdma_ack_cm_event(cm_event);
-	if (ret) {
-		rdma_error("Failed to acknowledge cm event, errno: %d\n", 
-			       -errno);
-		//continuing anyways
-	}
-	/* Destroy QP */
-	rdma_destroy_qp(cm_client_id);
-	/* Destroy client cm id */
-	ret = rdma_destroy_id(cm_client_id);
-	if (ret) {
-		rdma_error("Failed to destroy client id cleanly, %d \n", -errno);
-		// we continue anyways;
-	}
-	/* Destroy CQ */
-	ret = ibv_destroy_cq(client_cq);
-	if (ret) {
-		rdma_error("Failed to destroy completion queue cleanly, %d \n", -errno);
-		// we continue anyways;
-	}
-	/* Destroy completion channel */
-	ret = ibv_destroy_comp_channel(io_completion_channel);
-	if (ret) {
-		rdma_error("Failed to destroy completion channel cleanly, %d \n", -errno);
-		// we continue anyways;
-	}
-	/* Destroy memory buffers */
-	rdma_buffer_deregister(server_metadata_mr);
-	rdma_buffer_deregister(client_metadata_mr);	
-	rdma_buffer_deregister(client_src_mr);	
-	rdma_buffer_deregister(client_dst_mr);	
-	/* We free the buffers */
-	free(src);
-	free(dst);
-	/* Destroy protection domain */
-	ret = ibv_dealloc_pd(pd);
-	if (ret) {
-		rdma_error("Failed to destroy client protection domain cleanly, %d \n", -errno);
-		// we continue anyways;
-	}
-	rdma_destroy_event_channel(cm_event_channel);
-	printf("Client resource clean up is complete \n");
-	return 0;
-#endif // _OLD_CODE0
 }
 
 static int client_main(void * data) {
 	int ret = -1;
-	src = dst = NULL; 
-	struct krdma_cb *cb = NULL;
 
 	thread_running = true;
 
-	if (client_init() != 0) {
-		goto exit;
-	}
-
-	ret = krdma_alloc_cb(&cb, KRDMA_CLIENT_CONN);
-	if (ret) {
-		rdma_error("alloc cb fail, ret %d\n", ret);
+	cb = krdma_alloc_cb();
+	if (!cb) {
+		rdma_error("alloc cb fail\n");
 		goto exit;
 	}
 
@@ -401,7 +309,7 @@ static int client_main(void * data) {
 		goto exit;
 	}
 	
-	if (check_src_dst()) {
+	if (check_src_dst(cb->rdma_write_buf, cb->rdma_read_buf)) {
 		rdma_error("src and dst buffers do not match \n");
 	} else {
 		debug("...\nSUCCESS, source and destination buffers match \n");

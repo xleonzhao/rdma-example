@@ -15,211 +15,14 @@
 
 #include "krdma.h"
 
-/* MR for RDMA read write */
-int krdma_setup_mr(struct krdma_cb *cb) {
-	if (!cb)
+int krdma_set_addr(struct sockaddr_in *addr, const char *host, const int port) {
+	if (!addr)
 		return -1;
 
-	krdma_rw_info_t *local_info = &cb->local_info;
-	krdma_rw_info_t *remote_info = &cb->remote_info;
-	struct ib_port_attr port_attr;
-	int page_list_len;
-	struct ib_mr *mr;
-	void *local_buf=NULL, *remote_buf=NULL;
-	dma_addr_t local_dma_addr=0L, remote_dma_addr=0L;
-	int ret;
-	struct scatterlist sg = {0};
-
-	cb->send_dma_addr = ib_dma_map_single(cb->pd->device,
-				   &cb->send_buf, sizeof(cb->send_buf), DMA_BIDIRECTIONAL);
-    if(ib_dma_mapping_error(cb->pd->device, cb->send_dma_addr)) {
-		rdma_error("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
-			&cb->send_buf, sizeof(cb->send_buf));
-		goto exit;
-	}
-
-	cb->recv_dma_addr = ib_dma_map_single(cb->pd->device,
-				   &cb->recv_buf, sizeof(cb->recv_buf), DMA_BIDIRECTIONAL);
-    if(ib_dma_mapping_error(cb->pd->device, cb->recv_dma_addr)) {
-		rdma_error("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
-			&cb->recv_buf, sizeof(cb->recv_buf));
-		goto exit;
-	}
-
-	cb->start_buf_size = RDMA_RDWR_BUF_LEN;
-	cb->start_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->start_buf_size,
-							&cb->start_dma_addr,
-							GFP_KERNEL);
-	if (!cb->start_buf) {
-		rdma_error("start_buf malloc failed\n");
-		ret = -ENOMEM;
-		goto exit;
-	}	
-
-	cb->rdma_buf_size = RDMA_RDWR_BUF_LEN;
-	cb->rdma_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->rdma_buf_size,
-							&cb->rdma_dma_addr,
-							GFP_KERNEL);
-	if (!cb->rdma_buf) {
-		rdma_error("rdma_buf malloc failed\n");
-		ret = -ENOMEM;
-		goto exit;
-	}
-
-	debug("send buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
-					cb->start_buf, cb->start_dma_addr, cb->start_buf_size);
-	debug("recv buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
-					cb->rdma_buf, cb->rdma_dma_addr, cb->rdma_buf_size);
-
-/*
-	// allocate space for local use
-	local_buf = kmalloc(RDMA_SEND_BUF_LEN , GFP_KERNEL);
-	remote_buf = kmalloc(RDMA_RECV_BUF_LEN , GFP_KERNEL);
-	if (!local_buf || !remote_buf) {
-		krdma_err("buf alloc failed.\n");
-		goto exit;
-	}
-	local_info->buf = local_buf;
-	local_info->length = RDMA_SEND_BUF_LEN ;	
-	remote_info->buf = remote_buf;
-	remote_info->length = RDMA_RECV_BUF_LEN;
-
-	local_dma_addr = ib_dma_map_single(cb->cm_id->device,
-				   local_info->buf, local_info->length, DMA_BIDIRECTIONAL);
-    if(ib_dma_mapping_error(cb->pd->device, local_dma_addr)) {
-		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
-			local_info->buf, local_info->length);
-		goto exit;
-	}
-	local_info->dma_addr = local_dma_addr;
-
-	remote_dma_addr = ib_dma_map_single(cb->cm_id->device,
-				   remote_info->buf, remote_info->length, DMA_BIDIRECTIONAL);
-    if(ib_dma_mapping_error(cb->pd->device, remote_dma_addr)) {
-		krdma_err("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
-			remote_info->buf, remote_info->length);
-		goto exit;
-	}
-	remote_info->dma_addr = remote_dma_addr;
-
-	krdma_debug("send buffer allocated ok, addr %p, size %ld\n", 
-					cb->local_info.buf, cb->local_info.length);
-	krdma_debug("recv buffer allocated ok, addr %p, size %ld\n", 
-					cb->remote_info.buf, cb->remote_info.length);
-*/
-
-	mr = cb->pd->device->ops.get_dma_mr(cb->pd, IB_ACCESS_REMOTE_READ | 
-                                     IB_ACCESS_REMOTE_WRITE | 
-                                     IB_ACCESS_LOCAL_WRITE);
-	if (IS_ERR(mr)) {
-		ret = PTR_ERR(mr);
-		rdma_error("get_dma_mr failed %d\n", ret);
-		goto exit;
-	}
-	cb->mr = mr;
-	debug("mr registered: rkey 0x%x lkey 0x%x\n",
-		mr->rkey, mr->lkey);
-
-/*
-    // create memory region
-	page_list_len = (((remote_info->length - 1) & PAGE_MASK) + PAGE_SIZE)
-				>> PAGE_SHIFT;
-	mr = ib_alloc_mr(cb->pd, IB_MR_TYPE_MEM_REG, page_list_len);
-	if (IS_ERR(mr)) {
-		ret = PTR_ERR(mr);
-		krdma_err("allocate mr failed %d\n", ret);
-		goto exit;
-	}
-	cb->mr = mr;
-	cb->page_list_len = page_list_len;
-	krdma_debug("mr registered: rkey 0x%x page_list_len %u\n",
-		mr->rkey, page_list_len);
-
-	sg_dma_address(&sg) = remote_info->dma_addr;
-	sg_dma_len(&sg) = remote_info->length;
-	ret = ib_map_mr_sg(cb->mr, &sg, 1, NULL, PAGE_SIZE);
-	if(ret <= 0 || ret > cb->page_list_len) {
-		krdma_err("ib_map_mr_sg() error, ret %d\n", ret);
-		goto exit;
-	} else {
-		krdma_debug("ib_map_mr_sg() ok, page size %u len %lu iova_start %llx\n",
-			cb->mr->page_size,
-			(unsigned long)cb->mr->length,
-			(unsigned long long)cb->mr->iova);		
-	}
-*/
-
-	ret = ib_query_port(cb->cm_id->device, cb->cm_id->port_num, &port_attr);
-	if (ret) {
-		rdma_error("ib_query_port failed.\n");
-		goto exit;
-	}
-	local_info->lid = port_attr.lid;
-	local_info->qp_num = cb->qp->qp_num;
-	
-	debug("krdma_setup_mr() is done\n");
-	return 0;
-
-exit:
-	krdma_free_mr(cb);
-	return -ENOMEM;
-}
-
-void krdma_free_mr(struct krdma_cb *cb) {
-	// if (cb->mr) {
-	// 	ib_dereg_mr(cb->mr);
-	// 	cb->mr = NULL;
-	// }
-
-	if (cb->local_info.dma_addr) {
-		ib_dma_unmap_single(cb->cm_id->device,
-				   cb->local_info.dma_addr, cb->local_info.length, DMA_BIDIRECTIONAL);
-		cb->local_info.dma_addr = 0L;
-	}
-	if (cb->remote_info.dma_addr) {
-		ib_dma_unmap_single(cb->cm_id->device,
-				   cb->remote_info.dma_addr, cb->remote_info.length, DMA_BIDIRECTIONAL);
-		cb->remote_info.dma_addr = 0L;
-	}
-/*
-	if (cb->local_info.buf) {
-		kfree(cb->local_info.buf);
-		cb->local_info.buf = NULL;
-	}
-	if (cb->remote_info.buf) {
-		kfree(cb->remote_info.buf);
-		cb->remote_info.buf = NULL;
-	}
-*/
-	if (cb->start_buf) {
-		dma_free_coherent(cb->pd->device->dma_device, cb->start_buf_size, cb->start_buf,
-					cb->start_dma_addr);
-	}
-	if (cb->rdma_buf) {
-		dma_free_coherent(cb->pd->device->dma_device, cb->rdma_buf_size, cb->rdma_buf,
-					cb->rdma_dma_addr);
-	}
-}
-
-int krdma_alloc_cb(struct krdma_cb **cbp, enum krdma_role role)
-{
-	struct krdma_cb *cb;
-
-	cb = kzalloc(sizeof(*cb), GFP_KERNEL);
-	if (!cb)
-		return -ENOMEM;
-	init_completion(&cb->cm_done);
-
-	cb->role = role;
-	if (cb->role == KRDMA_LISTEN_CONN) {
-		INIT_LIST_HEAD(&cb->ready_conn);
-		INIT_LIST_HEAD(&cb->active_conn);
-	}
-	mutex_init(&cb->slock);
-	mutex_init(&cb->rlock);
-
-	if (cbp)
-		*cbp = cb;
+	memset(addr, 0, sizeof(struct sockaddr_in));
+	addr->sin_family = AF_INET;
+	addr->sin_addr.s_addr = in_aton(host);
+	addr->sin_port = htons(port);
 	return 0;
 }
 
@@ -319,10 +122,168 @@ error:
 	complete(&cb->cm_done);
 }
 
+int krdma_cma_event_handler(struct rdma_cm_id *cm_id,
+		struct rdma_cm_event *event)
+{
+	struct krdma_cb *cb = cm_id->context;
+	// struct krdma_cb *conn_cb = NULL;
+
+	switch (event->event) {
+	case RDMA_CM_EVENT_ADDR_RESOLVED:
+		debug("%s: RDMA_CM_EVENT_ADDR_RESOLVED, cm_id %p\n",
+				__func__, cm_id);
+		cb->state = KRDMA_ADDR_RESOLVED;
+		break;
+
+	case RDMA_CM_EVENT_ROUTE_RESOLVED:
+		debug("%s: RDMA_CM_EVENT_ROUTE_RESOLVED, cm_id %p\n",
+				__func__, cm_id);
+		cb->state = KRDMA_ROUTE_RESOLVED;
+		break;
+
+	case RDMA_CM_EVENT_ROUTE_ERROR:
+		debug("%s: RDMA_CM_EVENT_ROUTE_ERROR, cm_id %p, error %d\n",
+				__func__, cm_id, event->status);
+		cb->state = KRDMA_ERROR;
+		break;
+
+/* this is for server
+	case RDMA_CM_EVENT_CONNECT_REQUEST:
+		krdma_debug("%s: RDMA_CM_EVENT_CONNECT_REQUEST, cm_id %p\n",
+				__func__, cm_id);
+		ret = __krdma_create_cb(&conn_cb, KRDMA_ACCEPT_CONN);
+		if (!ret) {
+			conn_cb->cm_id = cm_id;
+			cm_id->context = conn_cb;
+			list_add_tail(&conn_cb->list, &cb->ready_conn);
+		} else {
+			krdma_err("__krdma_create_cb fail, ret %d\n", ret);
+			cb->state = KRDMA_ERROR;
+		}
+		break;
+*/
+
+	case RDMA_CM_EVENT_ESTABLISHED:
+		debug("%s: RDMA_CM_EVENT_ESTABLISHED, cm_id %p\n",
+				__func__, cm_id);
+		cb->state = KRDMA_CONNECTED;
+		break;
+
+	case RDMA_CM_EVENT_DISCONNECTED:
+		debug(KERN_ERR "%s: RDMA_CM_EVENT_DISCONNECTED, cm_id %p\n",
+				__func__, cm_id);
+		cb->state = KRDMA_DISCONNECTED;
+		break;
+
+	case RDMA_CM_EVENT_CONNECT_ERROR:
+	case RDMA_CM_EVENT_UNREACHABLE:
+	case RDMA_CM_EVENT_REJECTED:
+		rdma_error("RDMA_CM_EVENT %d, cm_id %p\n", event->event, cm_id);
+		cb->state = KRDMA_CONNECT_REJECTED;
+		break;
+	default:
+		debug("%s: unknown event %d, cm_id %p\n",
+				__func__, event->event, cm_id);
+		cb->state = KRDMA_ERROR;
+	}
+	complete(&cb->cm_done);
+	return 0;
+}
+
+/* MR for RDMA read write */
+int krdma_setup_mr(struct krdma_cb *cb) {
+	int ret;
+
+	if (!cb)
+		return -1;
+
+	cb->send_dma_addr = ib_dma_map_single(cb->pd->device,
+				   &cb->send_buf, sizeof(cb->send_buf), DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, cb->send_dma_addr)) {
+		rdma_error("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
+			&cb->send_buf, sizeof(cb->send_buf));
+		goto exit;
+	}
+
+	cb->recv_dma_addr = ib_dma_map_single(cb->pd->device,
+				   &cb->recv_buf, sizeof(cb->recv_buf), DMA_BIDIRECTIONAL);
+    if(ib_dma_mapping_error(cb->pd->device, cb->recv_dma_addr)) {
+		rdma_error("Failed to map buffer addr to dma addr, addr=%p, length=%ld\n", 
+			&cb->recv_buf, sizeof(cb->recv_buf));
+		goto exit;
+	}
+
+	cb->rdma_buf_size = RDMA_RDWR_BUF_LEN;
+
+	cb->rdma_write_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->rdma_buf_size,
+							&cb->rdma_wbuf_dma_addr,
+							GFP_KERNEL);
+	if (!cb->rdma_write_buf) {
+		rdma_error("start_buf malloc failed\n");
+		ret = -ENOMEM;
+		goto exit;
+	}	
+
+	cb->rdma_read_buf = dma_alloc_coherent(cb->pd->device->dma_device, cb->rdma_buf_size,
+							&cb->rdma_rbuf_dma_addr,
+							GFP_KERNEL);
+	if (!cb->rdma_read_buf) {
+		rdma_error("rdma_buf malloc failed\n");
+		ret = -ENOMEM;
+		goto exit;
+	}
+
+	debug("rdma write buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
+					cb->rdma_write_buf, cb->rdma_wbuf_dma_addr, cb->rdma_buf_size);
+	debug("rdma read buffer allocated ok, addr %p, dma_addr %llx, size %d\n", 
+					cb->rdma_read_buf, cb->rdma_rbuf_dma_addr, cb->rdma_buf_size);
+
+	debug("krdma_setup_mr() is done\n");
+	return 0;
+
+exit:
+	krdma_free_mr(cb);
+	return -ENOMEM;
+}
+
+void krdma_free_mr(struct krdma_cb *cb) {
+	// if (cb->mr) {
+	// 	ib_dereg_mr(cb->mr);
+	// 	cb->mr = NULL;
+	// }
+
+	if (cb->rdma_write_buf) {
+		dma_free_coherent(cb->pd->device->dma_device, cb->rdma_buf_size, cb->rdma_write_buf,
+					cb->rdma_wbuf_dma_addr);
+	}
+	if (cb->rdma_read_buf) {
+		dma_free_coherent(cb->pd->device->dma_device, cb->rdma_buf_size, cb->rdma_read_buf,
+					cb->rdma_rbuf_dma_addr);
+	}
+}
+
+struct krdma_cb * krdma_alloc_cb(void)
+{
+	struct krdma_cb *cb;
+
+	cb = kzalloc(sizeof(*cb), GFP_KERNEL);
+	if (!cb) {
+		rdma_error("failed to allocate memory for cb\n");
+		return NULL;
+	}
+
+	init_completion(&cb->cm_done);
+
+	return cb;
+}
+
 int krdma_init_cb(struct krdma_cb *cb) {
 	int ret;
 	struct ib_cq_init_attr cq_attr;
 	struct ib_qp_init_attr qp_init_attr;
+
+	if (!cb)
+		return -ENOMEM;
 
 	/* Create Protection Domain. */
 	cb->pd = ib_alloc_pd(cb->cm_id->device, IB_PD_UNSAFE_GLOBAL_RKEY);
@@ -404,9 +365,6 @@ exit:
 
 int krdma_free_cb(struct krdma_cb *cb)
 {
-	// struct krdma_cb *entry = NULL;
-	// struct krdma_cb *this = NULL;
-
 	if (cb == NULL)
 		return -EINVAL;
 
@@ -418,6 +376,7 @@ int krdma_free_cb(struct krdma_cb *cb)
 		rdma_destroy_qp(cb->cm_id);
 
 	krdma_free_mr(cb);
+
 	if (cb->send_cq)
 		ib_destroy_cq(cb->send_cq);
 	if (cb->recv_cq)
@@ -429,97 +388,7 @@ int krdma_free_cb(struct krdma_cb *cb)
 	rdma_destroy_id(cb->cm_id);
 	cb->cm_id = NULL;
 
-	// if (cb->role == KRDMA_LISTEN_CONN) {
-	// 	list_for_each_entry_safe(entry, this, &cb->ready_conn, list) {
-	// 		krdma_free_cb(entry);
-	// 		list_del(&entry->list);
-	// 	}
-	// 	list_for_each_entry_safe(entry, this, &cb->active_conn, list) {
-	// 		krdma_free_cb(entry);
-	// 		list_del(&entry->list);
-	// 	}
-	// }
-
 	kfree(cb);
-	return 0;
-}
-
-int krdma_cma_event_handler(struct rdma_cm_id *cm_id,
-		struct rdma_cm_event *event)
-{
-	struct krdma_cb *cb = cm_id->context;
-	// struct krdma_cb *conn_cb = NULL;
-
-	switch (event->event) {
-	case RDMA_CM_EVENT_ADDR_RESOLVED:
-		debug("%s: RDMA_CM_EVENT_ADDR_RESOLVED, cm_id %p\n",
-				__func__, cm_id);
-		cb->state = KRDMA_ADDR_RESOLVED;
-		break;
-
-	case RDMA_CM_EVENT_ROUTE_RESOLVED:
-		debug("%s: RDMA_CM_EVENT_ROUTE_RESOLVED, cm_id %p\n",
-				__func__, cm_id);
-		cb->state = KRDMA_ROUTE_RESOLVED;
-		break;
-
-	case RDMA_CM_EVENT_ROUTE_ERROR:
-		debug("%s: RDMA_CM_EVENT_ROUTE_ERROR, cm_id %p, error %d\n",
-				__func__, cm_id, event->status);
-		cb->state = KRDMA_ERROR;
-		break;
-
-/* LZ: this is for server code
-	case RDMA_CM_EVENT_CONNECT_REQUEST:
-		krdma_debug("%s: RDMA_CM_EVENT_CONNECT_REQUEST, cm_id %p\n",
-				__func__, cm_id);
-		ret = __krdma_create_cb(&conn_cb, KRDMA_ACCEPT_CONN);
-		if (!ret) {
-			conn_cb->cm_id = cm_id;
-			cm_id->context = conn_cb;
-			list_add_tail(&conn_cb->list, &cb->ready_conn);
-		} else {
-			krdma_err("__krdma_create_cb fail, ret %d\n", ret);
-			cb->state = KRDMA_ERROR;
-		}
-		break;
-*/
-
-	case RDMA_CM_EVENT_ESTABLISHED:
-		debug("%s: RDMA_CM_EVENT_ESTABLISHED, cm_id %p\n",
-				__func__, cm_id);
-		cb->state = KRDMA_CONNECTED;
-		break;
-
-	case RDMA_CM_EVENT_DISCONNECTED:
-		debug(KERN_ERR "%s: RDMA_CM_EVENT_DISCONNECTED, cm_id %p\n",
-				__func__, cm_id);
-		cb->state = KRDMA_DISCONNECTED;
-		break;
-
-	case RDMA_CM_EVENT_CONNECT_ERROR:
-	case RDMA_CM_EVENT_UNREACHABLE:
-	case RDMA_CM_EVENT_REJECTED:
-		rdma_error("RDMA_CM_EVENT %d, cm_id %p\n", event->event, cm_id);
-		cb->state = KRDMA_CONNECT_REJECTED;
-		break;
-	default:
-		debug("%s: unknown event %d, cm_id %p\n",
-				__func__, event->event, cm_id);
-		cb->state = KRDMA_ERROR;
-	}
-	complete(&cb->cm_done);
-	return 0;
-}
-
-int krdma_set_addr(struct sockaddr_in *addr, const char *host, const int port) {
-	if (!addr)
-		return -1;
-
-	memset(addr, 0, sizeof(struct sockaddr_in));
-	addr->sin_family = AF_INET;
-	addr->sin_addr.s_addr = in_aton(host);
-	addr->sin_port = htons(port);
 	return 0;
 }
 
