@@ -51,7 +51,7 @@ struct krdma_server_info {
 	uint32_t rkey;
 };
 
-// for server code compatibility only, not for real use
+// simulating sending server client's secret
 struct krdma_client_info {
 	uint64_t token1;
 	uint32_t size;
@@ -116,8 +116,8 @@ int krdma_cma_event_handler(struct rdma_cm_id *cm_id,
 		struct rdma_cm_event *event);
 int krdma_set_addr(struct sockaddr_in *addr, const char *host, const int port);
 int krdma_resolve_remote(struct krdma_cb *cb, const char *host, const int port);
-int krdma_setup_mr(struct krdma_cb *cb);
-void krdma_free_mr(struct krdma_cb *cb);
+int krdma_setup_buf(struct krdma_cb *cb);
+void krdma_free_buf(struct krdma_cb *cb);
 uint64_t string_to_uint64(const char *str);
 
 #endif /* __KVM_X86_KRDMA_H */

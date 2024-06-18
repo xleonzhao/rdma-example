@@ -1,9 +1,4 @@
-// credit: https://github.com/xleonzhao/krdma/blob/nopost/krdma.c
-
-/* 
- * Called after __krdma_bound_dev_{local, remote}.
- * Allocate pd, cq, qp, mr, freed by caller
- */
+// credit: https://github.com/snake0/krdma
 
 #include <linux/kernel.h>
 #include <linux/inet.h>
@@ -34,7 +29,7 @@ static void show_rdma_buffer_info(struct krdma_server_info *info){
 		return;
 	}
 	debug("---------------------------------------------------------\n");
-	debug("buffer info, addr: %p , len: %u , rkey : 0x%u \n", 
+	debug("buffer info, addr: %p , len: %u , rkey : 0x%x \n", 
 			(void*) info->dma_addr, info->size, info->rkey);
 	debug("---------------------------------------------------------\n");
 }
@@ -111,16 +106,7 @@ static void krdma_cq_event_handler(struct ib_cq *cq, void *ctx)
 			debug("recv completion, %d bytes received\n", wc.byte_len);
 			debug("Server sent us its buffer location and credentials, showing \n");
 			show_rdma_buffer_info(&cb->recv_buf);
-			// cb->stats.recv_bytes += sizeof(cb->recv_buf);
-			// cb->stats.recv_msgs++;
 
-			// wait for further message by server
-			// ret = ib_post_recv(cb->qp, &cb->rq_wr, &bad_wr);
-			// if (ret) {
-			// 	printk(KERN_ERR PFX "post recv error: %d\n", 
-			// 	       ret);
-			// 	goto error;
-			// }
 			complete(&cb->cm_done);
 			break;
 
@@ -208,8 +194,8 @@ int krdma_cma_event_handler(struct rdma_cm_id *cm_id,
 	return 0;
 }
 
-/* MR for RDMA read write */
-int krdma_setup_mr(struct krdma_cb *cb) {
+/* for locally issued RDMA read write */
+int krdma_setup_buf(struct krdma_cb *cb) {
 	int ret;
 
 	if (!cb)
@@ -260,16 +246,11 @@ int krdma_setup_mr(struct krdma_cb *cb) {
 	return 0;
 
 exit:
-	krdma_free_mr(cb);
+	krdma_free_buf(cb);
 	return -ENOMEM;
 }
 
-void krdma_free_mr(struct krdma_cb *cb) {
-	// if (cb->mr) {
-	// 	ib_dereg_mr(cb->mr);
-	// 	cb->mr = NULL;
-	// }
-
+void krdma_free_buf(struct krdma_cb *cb) {
 	if (cb->rdma_write_buf) {
 		dma_free_coherent(cb->pd->device->dma_device, cb->rdma_buf_size, cb->rdma_write_buf,
 					cb->rdma_wbuf_dma_addr);
@@ -304,8 +285,7 @@ int krdma_init_cb(struct krdma_cb *cb) {
 		return -ENOMEM;
 
 	/* Create Protection Domain. */
-	cb->pd = ib_alloc_pd(cb->cm_id->device, IB_PD_UNSAFE_GLOBAL_RKEY);
-	// cb->pd = ib_alloc_pd(cb->cm_id->device, 0);
+	cb->pd = ib_alloc_pd(cb->cm_id->device, 0);
 	if (IS_ERR(cb->pd)) {
 		ret = PTR_ERR(cb->pd);
 		rdma_error("ib_alloc_pd failed\n");
@@ -393,7 +373,7 @@ int krdma_free_cb(struct krdma_cb *cb)
 	if (cb->cm_id->qp)
 		rdma_destroy_qp(cb->cm_id);
 
-	krdma_free_mr(cb);
+	krdma_free_buf(cb);
 
 	if (cb->send_cq)
 		ib_destroy_cq(cb->send_cq);

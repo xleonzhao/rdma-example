@@ -65,7 +65,7 @@ static int client_init_rdma(struct krdma_cb *cb)
 	if (ret < 0)
 		goto exit;
 
-	ret = krdma_setup_mr(cb);
+	ret = krdma_setup_buf(cb);
 	if (ret < 0)
 		goto exit;
 
