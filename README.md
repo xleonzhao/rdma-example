@@ -1,22 +1,3 @@
-# What's New?
-
-Exercised a kernel module to be the client. Borrowed some code from [krdma](https://github.com/snake0/krdma) and [krping](https://github.com/larrystevenwise/krping).
-
-## How to run client as a kernel module?
-
-* compile `rdma_kclient`
-```
-cd kclient
-make
-```
-
-* run `rdma_kclient` (make sure `rdma_cm` module has been loaded)
-```
-sudo modprobe rdma_cm
-sudo insmod rdma_kclient.ko server=<server address> [port=<server port>]
-# default server port is 20886
-```
-
 # RDMA exmaple
 
 A simple RDMA server client example. The code contains a lot of comments. Here is the workflow that happens in the example: 
